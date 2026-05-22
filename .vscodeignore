@@ -1,0 +1,13 @@
+.gitignore
+.vscode/**
+*.vsix
+src/**
+tsconfig.json
+tsconfig.tsbuildinfo
+scripts/**
+**/*.map
+.npm-cache/**
+webview/**
+node_modules/**
+resources/*.gif
+resources/*.png
