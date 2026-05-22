@@ -1,0 +1,23 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "Compile",
+			"command": "npm run compile",
+			"problemMatcher": []
+		},
+		{
+			"type": "shell",
+			"label": "Build package",
+			"command": "npm run package",
+			"problemMatcher": []
+		},
+		{
+			"type": "shell",
+			"label": "Install",
+			"command": "code --install-extension i-rebase-1.*.vsix --force",
+			"problemMatcher": []
+		}
+	]
+}
