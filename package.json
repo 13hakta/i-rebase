@@ -1,0 +1,134 @@
+{
+  "name": "i-rebase",
+  "displayName": "I-Rebase",
+  "description": "Interactive git rebase editor",
+  "version": "1.0.0",
+  "publisher": "13hakta",
+  "license": "MIT",
+  "author": {
+    "name": "Vitaly Chekryzhev",
+    "email": "13hakta@gmail.com"
+  },
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/13hakta/i-rebase.git"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Visualization"
+  ],
+  "keywords": [
+    "git",
+    "rebase",
+    "interactive",
+    "history",
+    "visualization",
+    "gui",
+    "scm"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/.git",
+    "onView:workbench.scm.history"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "irebase.initRebaseLastCommits:scm",
+        "title": "Interactive Rebase - N Last Commits",
+        "category": "I-Rebase"
+      },
+      {
+        "command": "irebase.initRebaseLast50Commits:scm",
+        "title": "Interactive Rebase - 50 Last Commits",
+        "category": "I-Rebase"
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "submenu": "irebase/scm/title",
+          "when": "scmProvider == git",
+          "group": "navigation@-3"
+        }
+      ],
+      "irebase/scm/title": [
+        {
+          "command": "irebase.initRebaseLast50Commits:scm",
+          "when": "scmProvider == git",
+          "group": "1_irebase@1"
+        },
+        {
+          "command": "irebase.initRebaseLastCommits:scm",
+          "when": "scmProvider == git",
+          "group": "1_irebase@2"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "irebase/scm/title",
+        "label": "Interactive rebase",
+        "icon": "$(git-branch)"
+      }
+    ],
+    "configuration": {
+      "title": "I-Rebase",
+      "properties": {
+        "irebase.reverseOrder": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show commit list in reverse order (newer higher)"
+        },
+        "irebase.actionViewKind": {
+          "type": "string",
+          "enum": [
+            "buttons",
+            "dropdown"
+          ],
+          "enumDescriptions": [
+            "Set of buttons",
+            "Dropdown list"
+          ],
+          "default": "buttons",
+          "markdownDescription": "View kind of commit actions set"
+        }
+      }
+    },
+    "customEditors": [
+      {
+        "viewType": "irebase.gitRebaseTodoEditor",
+        "displayName": "Interactive Rebase Editor",
+        "selector": [
+          {
+            "filenamePattern": "**/git-rebase-todo"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && node scripts/minify.js",
+    "build:webview": "cd webview && npm run build",
+    "build": "tsc -p ./ && node scripts/minify.js",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.8",
+    "@types/vscode": "^1.93.0",
+    "@vscode/vsce": "^3.9.1",
+    "terser": "^5.31.6",
+    "typescript": "^5.4.0"
+  },
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "dependencies": {}
+}
