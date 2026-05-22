@@ -1,0 +1,7 @@
+node_modules/
+out/
+*.vsix
+.npm-cache/
+.vscode-test/
+/media/*.css
+/media/*.js
