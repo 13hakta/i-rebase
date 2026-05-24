@@ -2,7 +2,7 @@
   "name": "i-rebase",
   "displayName": "I-Rebase",
   "description": "Interactive git rebase editor",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "publisher": "13hakta",
   "license": "MIT",
   "author": {
