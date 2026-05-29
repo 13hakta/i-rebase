@@ -329,7 +329,7 @@ export class GitService {
                 continue;
             }
 
-            const match = trimmed.match(/^(pick|reword|edit|squash|fixup|drop)\s+(\S+)(?:\s+#\s*(.*))?$/);
+            const match = trimmed.match(/^(pick|reword|edit|squash|fixup|drop)\s+(\S+)(?:\s+#?\s*(.*))?$/);
 
             if (match) {
                 const [_, command, hashLong, message] = match;
