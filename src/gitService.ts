@@ -7,6 +7,74 @@ import { Command, CommitChange, RebaseCommand, ShortTodoCommand, CommitInfo, Git
 
 const execAsync = promisify(exec);
 
+const outputChannel = vscode.window.createOutputChannel('I-Rebase');
+
+export type GitErrorKind = 'dirty-tree' | 'rebase-in-progress' | 'conflict' | 'no-upstream' | 'aborted' | 'generic';
+
+export interface GitErrorInfo {
+    kind: GitErrorKind;
+    message: string;
+}
+
+// Extract meaningful error text from git command failure
+function extractGitMessage(error: any): string {
+    const raw = [error?.stderr, error?.stdout, error?.message]
+        .map((v) => (v ? String(v) : ''))
+        .join('\n');
+
+    const important = raw.split('\n').filter((line) =>
+        /(^|\s)(fatal|error|CONFLICT|hint):/i.test(line) || /cannot rebase|already a rebase|could not apply/i.test(line)
+    );
+
+    if (important.length > 0)
+        return important.map((l) => l.trim()).join('\n');
+
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    return lines.length > 0 ? lines[lines.length - 1] : 'Unknown git error';
+}
+
+// Classify a git error into a well-known scenario
+export function classifyGitError(error: any): GitErrorInfo {
+    const raw = [error?.stderr, error?.stdout, error?.message]
+        .map((v) => (v ? String(v) : ''))
+        .join('\n');
+
+    if (/already a rebase-merge|rebase-apply|rebase in progress/i.test(raw))
+        return { kind: 'rebase-in-progress', message: extractGitMessage(error) };
+
+    if (/cannot rebase:|unstaged changes|uncommitted changes|your local changes|index does not match/i.test(raw))
+        return { kind: 'dirty-tree', message: extractGitMessage(error) };
+
+    if (/CONFLICT|could not apply/i.test(raw))
+        return { kind: 'conflict', message: extractGitMessage(error) };
+
+    if (/no upstream configured|no configured push destination|has no upstream/i.test(raw))
+        return { kind: 'no-upstream', message: extractGitMessage(error) };
+
+    // User aborted the rebase from the todo editor while the sequence editor
+    // was still attached: git can no longer read the removed todo file - this is benign
+    if (/could not read file .*git-rebase-todo|there was a problem with the editor|No such file or directory.*git-rebase-todo/i.test(raw))
+        return { kind: 'aborted', message: extractGitMessage(error) };
+
+    return { kind: 'generic', message: extractGitMessage(error) };
+}
+
+// Show the I-Rebase output channel
+export function showGitLog() {
+    outputChannel.show();
+}
+
+// Log full git error details to the I-Rebase output channel
+export function logGitError(context: string, error: any) {
+    const details = [error?.stderr, error?.stdout, error instanceof Error ? error.stack || error.message : String(error)]
+        .map((v) => (v ? String(v) : ''))
+        .filter((v) => v.length > 0)
+        .join('\n');
+
+    outputChannel.appendLine(`[${new Date().toISOString()}] ${context}\n${details}\n`);
+}
+
+
 export class GitService {
     private cache_info = new Map<string, GitInfo>();
     private cache_files = new Map<string, string[]>();
@@ -211,6 +279,57 @@ export class GitService {
         } catch (error) {
             const document = await vscode.workspace.openTextDocument(targetUri);
             await vscode.window.showTextDocument(document);
+        }
+    }
+
+    // Resolve an arbitrary refspec (branch, tag, hash, HEAD~N) to a commit hash
+    async validateRef(ref: string): Promise<string | null> {
+        if (!this.workspaceRoot || !ref.trim())
+            return null;
+
+        try {
+            const { stdout } = await execAsync(`git rev-parse --verify --quiet "${ref.trim()}^{commit}"`, { cwd: this.workspaceRoot });
+            const hash = stdout.trim();
+            return hash || null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    // Get the merge base of HEAD and its push/upstream ref -
+    // the commit from which all not-yet-pushed local commits start
+    async getUpstreamMergeBase(): Promise<string | null> {
+        if (!this.workspaceRoot)
+            return null;
+
+        for (const ref of ['@{push}', '@{upstream}']) {
+            try {
+                const { stdout } = await execAsync(`git merge-base HEAD "${ref}"`, { cwd: this.workspaceRoot });
+                const hash = stdout.trim();
+                if (hash)
+                    return hash;
+            } catch (error) {
+                logGitError(`getUpstreamMergeBase(${ref}) failed`, error);
+            }
+        }
+
+        vscode.window.showErrorMessage('No upstream or push remote is configured for the current branch');
+        return null;
+    }
+
+    // Stash local changes (including untracked files)
+    async stashChanges(): Promise<boolean> {
+        if (!this.workspaceRoot)
+            return false;
+
+        try {
+            await execAsync('git stash -u', { cwd: this.workspaceRoot });
+            return true;
+        } catch (error) {
+            logGitError('Failed to stash changes', error);
+            const info = classifyGitError(error);
+            vscode.window.showErrorMessage(`Failed to stash changes: ${info.message}`);
+            return false;
         }
     }
 
