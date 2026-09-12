@@ -38,13 +38,38 @@
   "contributes": {
     "commands": [
       {
+        "command": "irebase.rebaseCustomRef:scm",
+        "title": "Custom Refspec...",
+        "category": "I-Rebase"
+      },
+      {
+        "command": "irebase.rebaseUpToPush:scm",
+        "title": "Up to Last Push",
+        "category": "I-Rebase"
+      },
+      {
+        "command": "irebase.rebasePreset50:scm",
+        "title": "50 Last Commits",
+        "category": "I-Rebase"
+      },
+      {
+        "command": "irebase.rebasePreset20:scm",
+        "title": "20 Last Commits",
+        "category": "I-Rebase"
+      },
+      {
         "command": "irebase.initRebaseLastCommits:scm",
-        "title": "Interactive Rebase - N Last Commits",
+        "title": "N Last Commits",
         "category": "I-Rebase"
       },
       {
         "command": "irebase.initRebaseLast50Commits:scm",
         "title": "Interactive Rebase - 50 Last Commits",
+        "category": "I-Rebase"
+      },
+      {
+        "command": "irebase.showOutput",
+        "title": "Show Log",
         "category": "I-Rebase"
       }
     ],
@@ -58,24 +83,32 @@
       ],
       "irebase/scm/title": [
         {
-          "command": "irebase.initRebaseLast50Commits:scm",
+          "command": "irebase.rebaseUpToPush:scm",
           "when": "scmProvider == git",
           "group": "1_irebase@1"
         },
         {
+          "command": "irebase.rebasePreset20:scm",
+          "when": "scmProvider == git",
+          "group": "2_irebase@1"
+        },
+        {
+          "command": "irebase.rebasePreset50:scm",
+          "when": "scmProvider == git",
+          "group": "2_irebase@2"
+        },
+        {
           "command": "irebase.initRebaseLastCommits:scm",
           "when": "scmProvider == git",
-          "group": "1_irebase@2"
+          "group": "2_irebase@3"
+        },
+        {
+          "command": "irebase.rebaseCustomRef:scm",
+          "when": "scmProvider == git",
+          "group": "3_irebase@1"
         }
       ]
     },
-    "submenus": [
-      {
-        "id": "irebase/scm/title",
-        "label": "Interactive rebase",
-        "icon": "$(git-branch)"
-      }
-    ],
     "configuration": {
       "title": "I-Rebase",
       "properties": {
@@ -109,6 +142,13 @@
           }
         ],
         "priority": "default"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "irebase/scm/title",
+        "label": "Interactive rebase",
+        "icon": "$(git-branch)"
       }
     ]
   },
