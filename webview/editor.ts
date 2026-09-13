@@ -1427,32 +1427,41 @@ declare function acquireVsCodeApi(): VsCodeApi;
         });
     }
 
-    // Helper function to find the nearest non-splitted row
-    function findNearestNonSplittedRow(mouseY: number): HTMLTableRowElement | null {
-        const allRows = Array.from(rowsContainer.querySelectorAll<HTMLTableRowElement>('tr:not(.splitted)'));
+    // Drop position is defined as an insertion gap index (0..rows.length):
+    // 0 = above the first row, k = below row k-1. "Before row i" and "after row i-1"
+    // are the same gap, so the indicator is drawn once per gap: 'drop-before'
+    // above the first row or 'drop-after' below a row.
+    interface DropPosition {
+        index: number;
+        row: HTMLElement;
+        before: boolean;
+    }
+
+    function getDropPosition(mouseY: number): DropPosition | null {
+        const allRows = Array.from(rowsContainer.querySelectorAll<HTMLElement>('tr:not(.splitted)'));
         if (allRows.length === 0) return null;
 
-        let closestRow: HTMLTableRowElement | null = null;
-        let minDistance = Infinity;
+        // Boundary candidates: above the first row and below every row
+        const boundaries = [{ index: 0, y: allRows[0].getBoundingClientRect().top }];
+        allRows.forEach((row, i) => {
+            boundaries.push({ index: i + 1, y: row.getBoundingClientRect().bottom });
+        });
 
-        for (const row of allRows) {
-            const rect = row.getBoundingClientRect();
-            const centerY = rect.top + rect.height / 2;
-            const distance = Math.abs(mouseY - centerY);
-
-            if (distance < minDistance) {
-                minDistance = distance;
-                closestRow = row;
-            }
+        let best = boundaries[0];
+        for (const b of boundaries) {
+            if (Math.abs(mouseY - b.y) < Math.abs(mouseY - best.y))
+                best = b;
         }
 
-        return closestRow;
+        if (best.index === 0)
+            return { index: 0, row: allRows[0], before: true };
+        return { index: best.index, row: allRows[best.index - 1], before: false };
     }
 
     // Global drag and drop handlers
     document.addEventListener('dragover', (e) => {
         e.preventDefault();
-        // Find the target row
+        // Handle drags only when the pointer is over the commit table
         let target: HTMLElement | null = e.target as HTMLElement;
         while (target && target !== document.body) {
             if (target.tagName === 'TR' && target.closest('tbody#rows')) {
@@ -1462,17 +1471,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
         }
 
         if (target && target.tagName === 'TR') {
-            // Skip rows with 'splitted' class
-            if (target.classList.contains('splitted')) {
-                target = findNearestNonSplittedRow(e.clientY);
-                if (!target) return; // No valid target found
-            }
-
             e.dataTransfer!.dropEffect = 'move';
             clearDropHints();
-            const rect = target.getBoundingClientRect();
-            const before = e.clientY < rect.top + rect.height / 2;
-            target.classList.add(before ? 'drop-before' : 'drop-after');
+
+            const pos = getDropPosition(e.clientY);
+            if (!pos) return;
+
+            pos.row.classList.add(pos.before ? 'drop-before' : 'drop-after');
         }
     });
 
@@ -1483,7 +1488,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
         const fromIndex = parseInt(e.dataTransfer!.getData('text/plain'), 10);
         if (isNaN(fromIndex) || fromIndex < 0 || fromIndex >= rows.length) return;
 
-        // Find the target row
+        // Handle drops only when the pointer is over the commit table
         let target: HTMLElement | null = e.target as HTMLElement;
         while (target && target !== document.body) {
             if (target.tagName === 'TR' && target.closest('tbody#rows')) {
@@ -1493,21 +1498,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
         }
 
         if (target && target.tagName === 'TR') {
-            // Skip rows with 'splitted' class
-            if (target.classList.contains('splitted')) {
-                target = findNearestNonSplittedRow(e.clientY);
-                if (!target) return; // No valid target found
-            }
+            const pos = getDropPosition(e.clientY);
+            if (!pos) return;
 
-            const toIndex = parseInt((target as HTMLElement).dataset.index!, 10);
-            if (!isNaN(toIndex)) {
-                let insertIndex = toIndex;
-                const rect = target.getBoundingClientRect();
-                const before = e.clientY < rect.top + rect.height / 2;
-                if (!before) insertIndex += 1;
-
-                dragMove(fromIndex, insertIndex);
-            }
+            dragMove(fromIndex, pos.index);
         }
     });
 
