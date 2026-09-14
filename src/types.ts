@@ -59,4 +59,5 @@ export interface ConflictCheck {
     success: boolean;
     hash?: string;
     conflictFiles?: string[];
+    error?: string;
 }
