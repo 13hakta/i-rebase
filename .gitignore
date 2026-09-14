@@ -5,3 +5,4 @@ out/
 .vscode-test/
 /media/*.css
 /media/*.js
+package-lock.json
