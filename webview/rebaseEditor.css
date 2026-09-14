@@ -276,7 +276,6 @@ tr.dependant {
 }
 
 .cmd-group .cmd-btn.active {
-  background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
   border-color: var(--vscode-focusBorder);
 }
@@ -285,6 +284,43 @@ tr.dependant {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
 }
+
+:root {
+  --cmd-pick:   #1A7F37;
+  --cmd-reword: #0969DA;
+  --cmd-edit:   #8250DF;
+  --cmd-squash: #E3B341;
+  --cmd-fixup:  #e35b00;
+  --cmd-drop:   #CF222E;
+}
+
+.cmd-group .cmd-btn.active.cmd-pick   { background: var(--cmd-pick); }
+.cmd-group .cmd-btn.active.cmd-reword { background: var(--cmd-reword); }
+.cmd-group .cmd-btn.active.cmd-edit   { background: var(--cmd-edit); }
+.cmd-group .cmd-btn.active.cmd-squash { background: var(--cmd-squash); }
+.cmd-group .cmd-btn.active.cmd-fixup  { background: var(--cmd-fixup); }
+.cmd-group .cmd-btn.active.cmd-drop   { background: var(--cmd-drop); }
+
+.cmd-group .cmd-btn.active.cmd-pick:hover:not(:disabled)   { background: color-mix(in srgb, var(--cmd-pick) 85%, black); }
+.cmd-group .cmd-btn.active.cmd-reword:hover:not(:disabled) { background: color-mix(in srgb, var(--cmd-reword) 85%, black); }
+.cmd-group .cmd-btn.active.cmd-edit:hover:not(:disabled)   { background: color-mix(in srgb, var(--cmd-edit) 85%, black); }
+.cmd-group .cmd-btn.active.cmd-squash:hover:not(:disabled) { background: color-mix(in srgb, var(--cmd-squash) 85%, black); }
+.cmd-group .cmd-btn.active.cmd-fixup:hover:not(:disabled)  { background: color-mix(in srgb, var(--cmd-fixup) 85%, black); }
+.cmd-group .cmd-btn.active.cmd-drop:hover:not(:disabled)   { background: color-mix(in srgb, var(--cmd-drop) 85%, black); }
+
+.current-action-btn.cmd-pick   { background: color-mix(in srgb, var(--cmd-pick) 55%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-reword { background: color-mix(in srgb, var(--cmd-reword) 55%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-edit   { background: color-mix(in srgb, var(--cmd-edit) 55%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-squash { background: color-mix(in srgb, var(--cmd-squash) 55%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-fixup  { background: color-mix(in srgb, var(--cmd-fixup) 55%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-drop   { background: color-mix(in srgb, var(--cmd-drop) 55%, var(--vscode-button-secondaryBackground)); }
+
+.current-action-btn.cmd-pick:hover:not(.locked)   { background: color-mix(in srgb, var(--cmd-pick) 50%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-reword:hover:not(.locked) { background: color-mix(in srgb, var(--cmd-reword) 50%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-edit:hover:not(.locked)   { background: color-mix(in srgb, var(--cmd-edit) 50%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-squash:hover:not(.locked) { background: color-mix(in srgb, var(--cmd-squash) 50%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-fixup:hover:not(.locked)  { background: color-mix(in srgb, var(--cmd-fixup) 50%, var(--vscode-button-secondaryBackground)); }
+.current-action-btn.cmd-drop:hover:not(.locked)   { background: color-mix(in srgb, var(--cmd-drop) 50%, var(--vscode-button-secondaryBackground)); }
 
 .action-group {
   padding: 0;
