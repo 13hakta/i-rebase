@@ -1229,7 +1229,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
                 const tdConflictDescription = document.createElement('td');
                 tdConflictDescription.colSpan = 5;
 
-                tdConflictDescription.innerHTML = (r.conflictFiles as unknown as string).split('<br>').join('<br>');
+                tdConflictDescription.textContent = (r.conflictFiles as string[]).join(', ');
 
                 trConflicts.appendChild(tdConflictMark);
                 trConflicts.appendChild(tdConflictDescription);
