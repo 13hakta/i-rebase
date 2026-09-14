@@ -941,7 +941,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
                 // Create element to display current command as a button-like element with just the first letter
                 const currentAction = document.createElement('div');
-                currentAction.className = 'current-action-btn';
+                currentAction.className = 'current-action-btn cmd-' + r.command.toLowerCase();
                 const cmdDef = CMD_DEFS.find(def => def.v === r.command.toLowerCase());
                 currentAction.textContent = cmdDef ? cmdDef.full : 'Pick'; // Display the full form of the command
                 currentAction.title = cmdDef ? cmdDef.full : 'Pick';
@@ -971,6 +971,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
                             const newCmdDef = CMD_DEFS.find(d => d.v === def.v);
                             currentAction.textContent = newCmdDef ? newCmdDef.full : 'Pick';
                             currentAction.title = newCmdDef ? newCmdDef.full : 'Pick';
+                            currentAction.className = 'current-action-btn cmd-' + def.v;
 
                             render(); // Re-render with current search pattern
                             floatingDropdown!.style.display = 'none'; // Hide dropdown after selection
@@ -1040,7 +1041,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
                 CMD_DEFS.forEach((def) => {
                     const b = document.createElement('button');
                     b.type = 'button';
-                    b.className = 'cmd-btn' + (curCmd === def.v ? ' active' : '');
+                    b.className = `cmd-btn cmd-${def.v}` + (curCmd === def.v ? ' active' : '');
                     b.textContent = def.short;
                     b.title = def.full;
                     b.setAttribute('aria-label', def.full);
