@@ -203,6 +203,12 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
                 webview.postMessage({
                     type: 'clearConflicts'
                 });
+            } else if (result.error) {
+                // The check itself failed – do not report a false conflict
+                vscode.window.showWarningMessage(`Cannot check rebase plan conflicts: ${result.error}`);
+                webview.postMessage({
+                    type: 'clearConflicts'
+                });
             } else {
                 if (result.hash) {
                     vscode.window.showErrorMessage('Conflict found in rebase plan');
