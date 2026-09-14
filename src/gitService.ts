@@ -570,15 +570,52 @@ export class GitService {
 
         const baseCommit = await this.getRebaseOnto();
         if (!baseCommit)
-            return { success: false, conflictFiles: [] };
+            return { success: false, conflictFiles: [], error: 'Cannot determine the rebase base commit' };
+
+        let baseRef = baseCommit;
+        try {
+            const gitDir = (await execAsync('git rev-parse --git-dir', { cwd: this.workspaceRoot })).stdout.trim();
+            const donePath = path.join(this.workspaceRoot, gitDir, 'rebase-merge', 'done');
+            if (fs.existsSync(donePath)) {
+                const done = fs.readFileSync(donePath, 'utf-8');
+                if (done.split('\n').some(line => line.trim().length > 0 && !line.startsWith('#'))) {
+                    const { stdout } = await execAsync('git rev-parse HEAD', { cwd: this.workspaceRoot });
+                    const head = stdout.trim();
+                    if (head && /^[a-f0-9]{40}$/.test(head))
+                        baseRef = head;
+                }
+            }
+        } catch (e) {
+            // Fall back to onto if anything cannot be resolved
+        }
 
         // Get commits to apply, preserving order, skipping 'drop'
-        const commitsToApply = commands
+        const commitsToApplyRaw = commands
             .filter(cmd => cmd.command !== 'drop')
             .map(cmd => cmd.hash);
 
-        if (commitsToApply.length === 0)
+        if (commitsToApplyRaw.length === 0)
             return { success: true };
+
+        // Hashes coming from the todo editor may be abbreviated (the webview uses %h).
+        // Resolve them to full 40-char hashes in a single batch, otherwise lookups
+        // against full hashes returned by rev-list would fail.
+        let commitsToApply: string[];
+        try {
+            const { stdout } = await execAsync(
+                `git rev-parse ${commitsToApplyRaw.map(h => `"${h}"`).join(' ')}`,
+                { cwd: this.workspaceRoot });
+            const resolved = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+            if (resolved.length !== commitsToApplyRaw.length || resolved.some(h => !/^[a-f0-9]{40}$/.test(h)))
+                throw new Error('Unexpected rev-parse output');
+            commitsToApply = resolved;
+        } catch (error) {
+            return {
+                success: false,
+                conflictFiles: [],
+                error: 'Cannot resolve hashes of the rebase plan commits'
+            };
+        }
 
         // Helper: get tree hash of a commit, returns 40-char hex or throws
         const getTreeHash = async (commit: string): Promise<string> => {
@@ -592,91 +629,133 @@ export class GitService {
 
         const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
-        // Helper: get parent tree hash (first parent) of a commit, or empty tree if no parent
-        const getParentTreeHash = async (commit: string): Promise<string> => {
-            let parentHash: string;
-            try {
-                const { stdout } = await execAsync(`git rev-parse "${commit}^1"`, { cwd: this.workspaceRoot });
-                parentHash = stdout.trim();
-                if (!parentHash || !/^[a-f0-9]{40}$/.test(parentHash)) {
-                    // No parent (root commit) – return empty tree
-                    return EMPTY_TREE;
-                }
-            } catch (e) {
-                // No parent – return empty tree
-                return EMPTY_TREE;
-            }
-            return getTreeHash(parentHash);
-        };
-
         // Current tree we have after applying previous commits
         let currentTree: string;
         try {
-            currentTree = await getTreeHash(baseCommit);
+            currentTree = await getTreeHash(baseRef);
         } catch (e) {
-            return { success: false, conflictFiles: [] };
+            return { success: false, conflictFiles: [], error: `Cannot resolve tree of the base commit ${baseRef}` };
+        }
+
+        // Batch-resolve trees of all commits in a single git call (instead of one rev-parse per commit)
+        const commitTrees = new Map<string, string>();
+        try {
+            const { stdout } = await execAsync(
+                `git rev-parse ${commitsToApply.map(h => `"${h}^{tree}"`).join(' ')}`,
+                { cwd: this.workspaceRoot });
+            const trees = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+            if (trees.length !== commitsToApply.length || trees.some(t => !/^[a-f0-9]{40}$/.test(t)))
+                throw new Error('Unexpected rev-parse output');
+            commitsToApply.forEach((h, i) => commitTrees.set(h, trees[i]));
+        } catch (error) {
+            return {
+                success: false,
+                conflictFiles: [],
+                error: 'Cannot resolve trees of the rebase plan commits'
+            };
+        }
+
+        // Batch-resolve parents of all commits in a single git call.
+        // Root commits simply have no parent entry in the rev-list output.
+        const parentMap = new Map<string, string[]>();
+        try {
+            const { stdout } = await execAsync(
+                `git rev-list --parents --no-walk ${commitsToApply.map(h => `"${h}"`).join(' ')}`,
+                { cwd: this.workspaceRoot });
+            for (const line of stdout.split('\n')) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length === 0 || !parts[0])
+                    continue;
+                parentMap.set(parts[0], parts.slice(1));
+            }
+        } catch (error) {
+            return {
+                success: false,
+                conflictFiles: [],
+                error: 'Cannot resolve parents of the rebase plan commits'
+            };
+        }
+
+        // Batch-resolve trees of all unique parents
+        const uniqueParents = [...new Set(commitsToApply.flatMap(h => parentMap.get(h) ?? []))];
+        const parentTrees = new Map<string, string>();
+        if (uniqueParents.length > 0) {
+            try {
+                const { stdout } = await execAsync(
+                    `git rev-parse ${uniqueParents.map(h => `"${h}^{tree}"`).join(' ')}`,
+                    { cwd: this.workspaceRoot });
+                const trees = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+                if (trees.length !== uniqueParents.length || trees.some(t => !/^[a-f0-9]{40}$/.test(t)))
+                    throw new Error('Unexpected rev-parse output');
+                uniqueParents.forEach((h, i) => parentTrees.set(h, trees[i]));
+            } catch (error) {
+                return {
+                    success: false,
+                    conflictFiles: [],
+                    error: 'Cannot resolve parent trees of the rebase plan commits'
+                };
+            }
         }
 
         for (let idx = 0; idx < commitsToApply.length; idx++) {
             const commitHash = commitsToApply[idx];
-            let commitTree: string, parentTree: string;
-            try {
-                commitTree = await getTreeHash(commitHash);
-                parentTree = await getParentTreeHash(commitHash);
-            } catch (error) {
-                return {
-                    success: false,
-                    hash: commitHash,
-                    conflictFiles: []
-                };
+            const commitTree = commitTrees.get(commitHash)!;
+            // No parent (root commit) – use empty tree as merge base
+            const parents = parentMap.get(commitHash) ?? [];
+            const parentTree = parents.length > 0 ? parentTrees.get(parents[0])! : EMPTY_TREE;
+
+            if (parentTree === currentTree) {
+                currentTree = commitTree;
+                continue;
             }
 
-            // Use git merge-tree --write-tree with explicit merge base
-            const mergeCmd = `git merge-tree --write-tree --merge-base=${parentTree} ${currentTree} ${commitTree}`;
-            let mergeStdout = '', mergeStderr = '';
-            let conflictFiles: string[] = [];
+            // Requires git >= 2.40.
+            const mergeCmd = `git merge-tree --write-tree --name-only --no-messages --merge-base=${parentTree} ${currentTree} ${commitTree}`;
+            let mergeStdout = '';
+            let exitCode = 0;
             try {
-                const { stdout, stderr } = await execAsync(mergeCmd, { cwd: this.workspaceRoot });
+                const { stdout } = await execAsync(mergeCmd, { cwd: this.workspaceRoot });
                 mergeStdout = stdout;
-                mergeStderr = stderr;
             } catch (error: any) {
+                exitCode = typeof error.code === 'number' ? error.code : 1;
                 mergeStdout = error.stdout || '';
-                mergeStderr = error.stderr || '';
             }
 
-            // Parse conflicts from stderr (merge-tree outputs conflicts to stderr)
-            const conflictRegex = /CONFLICT\s*\(([^)]+)\):\s*(?:Merge conflict in )?(.+)/;
-            for (const line of mergeStderr.split('\n')) {
-                const match = conflictRegex.exec(line);
-                if (match) {
-                    let file = match[2].trim();
-                    // If file contains additional description (like "deleted in ..."), try to extract just the filename
-                    const fileMatch = file.match(/^([^\s]+)/);
-                    if (fileMatch)
-                        file = fileMatch[1];
-                    conflictFiles.push(file);
+            if (exitCode === 0) {
+                // Successful merge – stdout contains the resulting tree hash
+                const mergedTree = mergeStdout.trim();
+                if (!mergedTree || !/^[a-f0-9]{40}$/.test(mergedTree)) {
+                    return {
+                        success: false,
+                        hash: commitHash,
+                        conflictFiles: [],
+                        error: `Unexpected merge-tree output for commit ${commitHash}`
+                    };
                 }
+                currentTree = mergedTree;
+                continue;
             }
 
-            if (conflictFiles.length > 0) {
+            if (exitCode !== 1) {
+                // Any exit code other than 0 (clean) or 1 (conflicts) means the merge itself failed
                 return {
                     success: false,
                     hash: commitHash,
-                    conflictFiles: conflictFiles
+                    conflictFiles: [],
+                    error: `git merge-tree failed for commit ${commitHash}`
                 };
             }
 
-            // Successful merge – stdout should contain the resulting tree hash
-            const mergedTree = mergeStdout.trim();
-            if (!mergedTree || !/^[a-f0-9]{40}$/.test(mergedTree)) {
-                return {
-                    success: false,
-                    hash: commitHash,
-                    conflictFiles: []
-                };
-            }
+            // Conflicts: first line is the (partial) merged tree, then a blank line
+            // and the list of conflicted file paths, one per line
+            const lines = mergeStdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            const conflictFiles = lines.filter(l => !/^[a-f0-9]{40}$/.test(l));
 
-            currentTree = mergedTree;
+            return {
+                success: false,
+                hash: commitHash,
+                conflictFiles: conflictFiles
+            };
         }
 
         return { success: true };
