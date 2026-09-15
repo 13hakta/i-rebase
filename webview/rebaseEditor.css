@@ -665,8 +665,11 @@ tr[data-command=drop] {
   background-color: var(--vscode-activityBar-border);
 }
 
-button.pressed {
-  background-color: var(--selected-bg);
+button.pressed,
+button.pressed:hover {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #007fd4);
 }
 
 .dialog-header {
