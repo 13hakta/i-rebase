@@ -334,18 +334,21 @@ button.cut-btn {
   padding: 1px 5px;
 }
 
-.drag-handle {
-  cursor: move;
+.error-sign, .drag-handle {
   text-align: center;
-  opacity: 0.6;
   user-select: none;
   padding: 4px 2px;
   margin: 0;
   line-height: 1;
-  display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
+}
+
+.drag-handle {
+  cursor: move;
+  opacity: 0.6;
+  display: flex;
 }
 
 .drag-handle:hover {
