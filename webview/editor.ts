@@ -327,7 +327,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
 
     function markConflictingCommit(hash: string, conflictFiles: string[]): void {
-        const commit = rows.find(c => c.hash === hash)!;
+        const commit = rows.find(c => hash.startsWith(c.hash) || c.hash.startsWith(hash));
+        if (!commit)
+            return;
 
         commit.hasConflict = true;
         commit.conflictFiles = structuredClone(conflictFiles);
