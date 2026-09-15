@@ -1225,15 +1225,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
                 const trConflicts = document.createElement('tr');
                 trConflicts.className = 'conflicts';
 
+                const tdSignMark = document.createElement('td');
+                tdSignMark.textContent = '⚠';
+                tdSignMark.className = 'error-sign';
+
                 const tdConflictMark = document.createElement('td');
                 tdConflictMark.textContent = 'Conflicting files';
-                tdConflictMark.colSpan = 2;
 
                 const tdConflictDescription = document.createElement('td');
                 tdConflictDescription.colSpan = 5;
 
                 tdConflictDescription.textContent = (r.conflictFiles as string[]).join(', ');
 
+                trConflicts.appendChild(tdSignMark);
                 trConflicts.appendChild(tdConflictMark);
                 trConflicts.appendChild(tdConflictDescription);
                 rowsContainer.appendChild(trConflicts);
