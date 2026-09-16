@@ -237,6 +237,10 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     private getWebviewContent(webview: vscode.Webview, options: any): string {
+        const splitDialogUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this.context.extensionUri, 'media', 'splitDialog.js')
+        );
+
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this.context.extensionUri, 'media', 'editor.js')
         );
@@ -307,6 +311,7 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
         let reverseOrder = ${options.reverseOrder};
         const actionViewKind = "${options.actionViewKind}";
     </script>
+    <script nonce="${nonce}" src="${splitDialogUri}"></script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
