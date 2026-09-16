@@ -450,6 +450,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
         let distributedFiles: string[] = [];
         let remainFiles: CommitChange[] = [];
+        let selectedCommitIdx = -1;
 
         // Initialize split commits array
         const splitCommits: SplitCommit[] = (commit.splitted && commit.splitted.commits) ? [...commit.splitted.commits] : [];
@@ -509,6 +510,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
         // Function to render split commits
         function renderSplitCommits(): void {
             const container = document.getElementById('commitsContainer')!;
+
+            // Preserve UI state across re-render: focus and selection
+            const prevScrollTop = container.scrollTop;
+            let refocusMessageIdx = -1;
+            const active = document.activeElement as HTMLElement | null;
+            if (active && dialog.contains(active)) {
+                const entry = active.closest('.split-commit-entry');
+                if (entry)
+                    refocusMessageIdx = Array.from(container.children).indexOf(entry);
+                if (!active.classList.contains('split-commit-message'))
+                    refocusMessageIdx = -1;
+            }
+
             container.innerHTML = '';
 
             splitCommits.forEach((splitCommit, idx) => {
@@ -531,8 +545,23 @@ declare function acquireVsCodeApi(): VsCodeApi;
                 // Set value via property to safely handle any characters in the message
                 (commitDiv.querySelector('.split-commit-message') as HTMLInputElement).value = splitCommit.message;
 
+                // Click anywhere on the card selects it as the assignment target
+                commitDiv.addEventListener('click', (e) => {
+                    if ((e.target as HTMLElement).closest('.remove-commit, .remove-file, .up-commit, .down-commit')) return;
+                    selectedCommitIdx = idx;
+                    container.querySelectorAll('.split-commit-entry').forEach(el => el.classList.remove('selected'));
+                    commitDiv.classList.add('selected');
+                });
+
                 container.appendChild(commitDiv);
             });
+
+            // Restore UI state after re-render
+            container.scrollTop = prevScrollTop;
+            if (selectedCommitIdx >= 0 && selectedCommitIdx < container.children.length)
+                (container.children[selectedCommitIdx] as HTMLElement).classList.add('selected');
+            if (refocusMessageIdx >= 0 && refocusMessageIdx < container.children.length)
+                (container.children[refocusMessageIdx].querySelector('.split-commit-message') as HTMLInputElement | null)?.focus();
 
             // Add event listeners for remove buttons
             document.querySelectorAll('.remove-commit').forEach(btn => {
@@ -541,6 +570,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
                     const removeSet = new Set(splitCommits[idx].files);
                     distributedFiles = distributedFiles.filter(item => !removeSet.has(item));
                     splitCommits.splice(idx, 1);
+
+                    // Keep selection consistent with the new list
+                    if (selectedCommitIdx === idx) selectedCommitIdx = -1;
+                    else if (selectedCommitIdx > idx) selectedCommitIdx--;
 
                     renderUnassignedFiles();
                     renderSplitCommits();
@@ -567,16 +600,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
             document.querySelectorAll<HTMLInputElement>('.split-commit-message').forEach((input, idx) => {
                 input.addEventListener('input', (e) => {
                     splitCommits[idx].message = (e.target as HTMLInputElement).value;
+
+                    // Clear invalid highlighting once the message is filled in
+                    if (splitCommits[idx].message.trim() !== '')
+                        input.closest('.split-commit-entry')!.classList.remove('invalid');
                 });
 
-                input.addEventListener('focus', (e) => {
-                    const commitElement = (e.target as HTMLElement).closest('.split-commit-entry')!;
-
-                    document.querySelectorAll('.split-commit-entry').forEach(entry => {
+                input.addEventListener('focus', (_e) => {
+                    selectedCommitIdx = idx;
+                    container.querySelectorAll('.split-commit-entry').forEach(entry => {
                         entry.classList.remove('selected');
                     });
-
-                    commitElement.classList.add('selected');
+                    input.closest('.split-commit-entry')!.classList.add('selected');
                 });
             });
 
@@ -779,12 +814,29 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
         // Save button
         document.getElementById('saveSplitBtn')!.addEventListener('click', () => {
-            // Update the original commit with the split commits
+            // Block saving when a commit has files but no message
+            let hasInvalid = false;
+            let focusedInvalid = false;
+            document.querySelectorAll('.split-commit-entry').forEach((entry, idx) => {
+                const invalid = splitCommits[idx].files.length > 0 && splitCommits[idx].message.trim() === '';
+                entry.classList.toggle('invalid', invalid);
+                if (invalid) {
+                    hasInvalid = true;
+                    if (!focusedInvalid) {
+                        (entry.querySelector('.split-commit-message') as HTMLInputElement).focus();
+                        focusedInvalid = true;
+                    }
+                }
+            });
+            if (hasInvalid) return;
+
+            // Update the original commit with the split commits.
+            // Commits without assigned files are ignored - only non-empty splits make sense.
             pushState();
             commit.splitted = {
-                commits: splitCommits.filter(c => (c.message.trim() !== '') && (c.files.length > 0))
+                commits: splitCommits.filter(c => c.files.length > 0)
             };
-            if (remainFiles)
+            if (remainFiles.length > 0)
                 commit.splitted.files = remainFiles.map(f => f.filename);
 
             dialog.close();
