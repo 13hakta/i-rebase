@@ -20,10 +20,6 @@ interface CmdDef {
     full: string;
 }
 
-interface ModificationMap {
-    [key: string]: string;
-}
-
 interface SplitCommit {
     message: string;
     files: string[];
@@ -58,6 +54,16 @@ interface CommitChange {
     modification: string;
     filename: string;
 }
+
+// Global object exposed by splitDialog.js (loaded before editor.js)
+declare const SplitDialog: {
+    open(options: {
+        title: string;
+        changes: CommitChange[];
+        existing?: SplitInfo;
+        onSave: (result: { commits: SplitCommit[]; remainingFiles: string[] }) => void;
+    }): void;
+};
 
 interface PostMessageUpdate {
     type: 'update';
@@ -125,15 +131,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
         { v: 'fixup', short: 'F', full: 'Fixup' },
         { v: 'drop', short: 'D', full: 'Drop' }
     ];
-
-    const MODIFICATIONS: ModificationMap = {
-        'A': 'Added',
-        'M': 'Modified',
-        'D': 'Deleted',
-        'R': 'Renamed',
-        'C': 'Copied',
-        'T': 'Type Changed'
-    };
 
     // Track currently selected row index
     let selectedRowIndex: number = -1;
@@ -418,439 +415,28 @@ declare function acquireVsCodeApi(): VsCodeApi;
         vscode.postMessage({ type: 'commitChanges', hash: commit.hash });
     }
 
-    function formatChanges(changes: CommitChange[]): string {
-        return changes.map(change => `
-			<label>
-				<div class="change" data-value="${escapeHtml(change.filename)}" draggable="true">
-					<div>
-						<input type="checkbox">
-						${escapeHtml(change.filename)}
-					</div>
-					<div class="mod">${MODIFICATIONS[change.modification]}</div>
-				</div>
-			</label>`).join('');
-    }
-
-    /** Escape a string for safe interpolation into HTML */
-    function escapeHtml(s: string): string {
-        return s
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
-
     // Function to open the split editor dialog
     function splitEditor(hash: string, changes: CommitChange[]): void {
-        // Get the selected commit
         const commit = rows.find(c => c.hash === hash);
 
         if (!commit) return;
 
-        let distributedFiles: string[] = [];
-        let remainFiles: CommitChange[] = [];
-        let selectedCommitIdx = -1;
+        SplitDialog.open({
+            title: commit.message,
+            changes,
+            existing: commit.splitted,
+            onSave: (result) => {
+                pushState();
+                commit.splitted = {
+                    commits: result.commits
+                };
+                if (result.remainingFiles.length > 0)
+                    commit.splitted.files = result.remainingFiles;
 
-        // Initialize split commits array
-        const splitCommits: SplitCommit[] = (commit.splitted && commit.splitted.commits) ? [...commit.splitted.commits] : [];
-
-        // Create modal dialog
-        const dialog = document.createElement('dialog');
-        dialog.className = 'split-editor-dialog';
-
-        dialog.innerHTML = `
-			<div class="dialog-header">
-				<div class="dialog-title">Split commit: ${escapeHtml(commit.message)}</div>
-			</div>
-			<div class="split-container">
-				<div class="changes-selection">
-					<button id="applyToSelectedBtn" class="primary">Assign to commit</button>
-					<label>Unassigned changes:</label>
-				</div>
-				<div class="commit-container">
-					<button id="addSplitCommitBtn" class="primary">Add commit</button>
-					<label>New commits:</label>
-				</div>
-			</div>
-			<div class="split-container2">
-				<div id="changesSelect"></div>
-				<div id="commitsContainer"></div>
-			</div>
-			<div class="buttons-panel">
-				<div class="dialog-buttons">
-					<button id="cancelSplitBtn">Cancel</button>
-					<button id="saveSplitBtn" class="primary">💾 Save</button>
-				</div>
-			</div>
-		`;
-
-        document.body.appendChild(dialog);
-        dialog.showModal();
-
-        // Prefill
-        if (commit.splitted && commit.splitted.commits)
-            for (const c of commit.splitted.commits)
-                for (const f of c.files)
-                    distributedFiles.push(f);
-        else {
-            // Templated add 2 new commits
-            if (changes.length > 1)
-                addSplitCommit();
-        }
-
-        function renderUnassignedFiles(): void {
-            const container = document.getElementById('changesSelect')!;
-
-            const excludedSet = new Set(distributedFiles);
-            remainFiles = changes.filter(change => !excludedSet.has(change.filename));
-            container.innerHTML = formatChanges(remainFiles);
-        }
-
-        // Function to render split commits
-        function renderSplitCommits(): void {
-            const container = document.getElementById('commitsContainer')!;
-
-            // Preserve UI state across re-render: focus and selection
-            const prevScrollTop = container.scrollTop;
-            let refocusMessageIdx = -1;
-            const active = document.activeElement as HTMLElement | null;
-            if (active && dialog.contains(active)) {
-                const entry = active.closest('.split-commit-entry');
-                if (entry)
-                    refocusMessageIdx = Array.from(container.children).indexOf(entry);
-                if (!active.classList.contains('split-commit-message'))
-                    refocusMessageIdx = -1;
+                resetFlags(); // Reset flags when files are reassigned during split
+                render(); // Refresh the main table to show the split commits
             }
-
-            container.innerHTML = '';
-
-            splitCommits.forEach((splitCommit, idx) => {
-                const commitDiv = document.createElement('div');
-                commitDiv.className = 'split-commit-entry';
-
-                commitDiv.innerHTML = `
-					<div class="split-commit-header">
-						<input type="text" class="split-commit-message" 
-							placeholder="Commit message" required />
-						<button class="up-commit">↑</button>
-						<button class="down-commit">↓</button>
-						<button class="remove-commit">×</button>
-					</div>
-					<div class="split-commit-files">
-                        ${splitCommit.files.map(file => `<div class="file-item" draggable="true">${escapeHtml(file)}<span class="remove-file">×</span></div>`).join('')}
-					</div>
-				`;
-
-                // Set value via property to safely handle any characters in the message
-                (commitDiv.querySelector('.split-commit-message') as HTMLInputElement).value = splitCommit.message;
-
-                // Click anywhere on the card selects it as the assignment target
-                commitDiv.addEventListener('click', (e) => {
-                    if ((e.target as HTMLElement).closest('.remove-commit, .remove-file, .up-commit, .down-commit')) return;
-                    selectedCommitIdx = idx;
-                    container.querySelectorAll('.split-commit-entry').forEach(el => el.classList.remove('selected'));
-                    commitDiv.classList.add('selected');
-                });
-
-                container.appendChild(commitDiv);
-            });
-
-            // Restore UI state after re-render
-            container.scrollTop = prevScrollTop;
-            if (selectedCommitIdx >= 0 && selectedCommitIdx < container.children.length)
-                (container.children[selectedCommitIdx] as HTMLElement).classList.add('selected');
-            if (refocusMessageIdx >= 0 && refocusMessageIdx < container.children.length)
-                (container.children[refocusMessageIdx].querySelector('.split-commit-message') as HTMLInputElement | null)?.focus();
-
-            // Add event listeners for remove buttons
-            document.querySelectorAll('.remove-commit').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const idx = Array.from((e.target as HTMLElement).parentElement!.parentElement!.children).indexOf((e.target as HTMLElement).parentElement!);
-                    const removeSet = new Set(splitCommits[idx].files);
-                    distributedFiles = distributedFiles.filter(item => !removeSet.has(item));
-                    splitCommits.splice(idx, 1);
-
-                    // Keep selection consistent with the new list
-                    if (selectedCommitIdx === idx) selectedCommitIdx = -1;
-                    else if (selectedCommitIdx > idx) selectedCommitIdx--;
-
-                    renderUnassignedFiles();
-                    renderSplitCommits();
-                });
-            });
-
-            // Add event listeners for remove file buttons
-            document.querySelectorAll('.remove-file').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const commitElement = (e.target as HTMLElement).closest('.split-commit-entry')!;
-                    const commitIdx = Array.from(document.querySelectorAll('.split-commit-entry')).indexOf(commitElement);
-                    const fileToRemove = (e.target as Node).previousSibling!.textContent!;
-                    const commit = splitCommits[commitIdx];
-                    if (commit) {
-                        commit.files = commit.files.filter(file => file !== fileToRemove);
-                        distributedFiles = distributedFiles.filter(file => file !== fileToRemove);
-                        renderUnassignedFiles();
-                        renderSplitCommits();
-                    }
-                });
-            });
-
-            // Add event listeners for message inputs
-            document.querySelectorAll<HTMLInputElement>('.split-commit-message').forEach((input, idx) => {
-                input.addEventListener('input', (e) => {
-                    splitCommits[idx].message = (e.target as HTMLInputElement).value;
-
-                    // Clear invalid highlighting once the message is filled in
-                    if (splitCommits[idx].message.trim() !== '')
-                        input.closest('.split-commit-entry')!.classList.remove('invalid');
-                });
-
-                input.addEventListener('focus', (_e) => {
-                    selectedCommitIdx = idx;
-                    container.querySelectorAll('.split-commit-entry').forEach(entry => {
-                        entry.classList.remove('selected');
-                    });
-                    input.closest('.split-commit-entry')!.classList.add('selected');
-                });
-            });
-
-            // Add event listeners for move up buttons
-            document.querySelectorAll('.up-commit').forEach((btn, idx) => {
-                btn.addEventListener('click', (_e) => {
-                    if (idx > 0) { // Can't move first item up
-                        // Swap current item with the previous one
-                        const temp = splitCommits[idx];
-                        splitCommits[idx] = splitCommits[idx - 1];
-                        splitCommits[idx - 1] = temp;
-
-                        // Re-render to reflect the new order
-                        renderSplitCommits();
-                    }
-                });
-            });
-
-            // Add event listeners for move down buttons
-            document.querySelectorAll('.down-commit').forEach((btn, idx) => {
-                btn.addEventListener('click', (_e) => {
-                    if (idx < splitCommits.length - 1) { // Can't move last item down
-                        // Swap current item with the next one
-                        const temp = splitCommits[idx];
-                        splitCommits[idx] = splitCommits[idx + 1];
-                        splitCommits[idx + 1] = temp;
-
-                        // Re-render to reflect the new order
-                        renderSplitCommits();
-                    }
-                });
-            });
-
-            // Add drag and drop functionality for files between commits
-            setupFileDragAndDrop();
-        }
-
-        function setupFileDragAndDrop(): void {
-            // Get all file items that are draggable
-            const fileItems = document.querySelectorAll<HTMLElement>('.file-item[draggable="true"]');
-
-            fileItems.forEach(item => {
-                item.addEventListener('dragstart', (e) => {
-                    (e as DragEvent).dataTransfer!.setData('text/plain', item.textContent!.replace(/\×$/, '').trim());
-                    (e as DragEvent).dataTransfer!.effectAllowed = 'move';
-                });
-            });
-
-            // Get all drop zones (commit file containers)
-            const dropZones = document.querySelectorAll<HTMLElement>('.split-commit-files');
-
-            dropZones.forEach(zone => {
-                zone.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    (e as DragEvent).dataTransfer!.dropEffect = 'move';
-                    zone.classList.add('drop-target');
-                });
-
-                zone.addEventListener('dragleave', (_e) => {
-                    zone.classList.remove('drop-target');
-                });
-
-                zone.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    zone.classList.remove('drop-target');
-
-                    const fileName = (e as DragEvent).dataTransfer!.getData('text/plain');
-
-                    // Find the commit container for this zone
-                    const commitEntry = zone.closest('.split-commit-entry')!;
-                    const commitIndex = Array.from(document.querySelectorAll('.split-commit-entry')).indexOf(commitEntry);
-
-                    if (commitIndex !== -1) {
-                        // Remove file from its current location
-                        removeFileFromAllCommits(fileName);
-
-                        // Add file to the target commit
-                        if (!splitCommits[commitIndex].files.includes(fileName)) {
-                            splitCommits[commitIndex].files.push(fileName);
-
-                            // Update distributed files list
-                            if (!distributedFiles.includes(fileName)) {
-                                distributedFiles.push(fileName);
-                            }
-                        }
-
-                        // Re-render the UI
-                        renderUnassignedFiles();
-                        renderSplitCommits();
-                    }
-                });
-            });
-
-            // Also allow dropping files from unassigned changes area
-            const unassignedArea = document.getElementById('changesSelect');
-            if (unassignedArea) {
-                unassignedArea.addEventListener('dragover', (e) => {
-                    e.preventDefault();
-                    (e as DragEvent).dataTransfer!.dropEffect = 'move';
-                });
-
-                unassignedArea.addEventListener('drop', (e) => {
-                    e.preventDefault();
-
-                    const fileName = (e as DragEvent).dataTransfer!.getData('text/plain');
-
-                    // Find the selected commit to move the file to
-                    const selectedCommitElement = document.querySelector('.split-commit-entry.selected');
-                    if (selectedCommitElement) {
-                        const commitIndex = Array.from(document.querySelectorAll('.split-commit-entry')).indexOf(selectedCommitElement);
-
-                        if (commitIndex !== -1) {
-                            // Add file to the selected commit
-                            if (!splitCommits[commitIndex].files.includes(fileName)) {
-                                splitCommits[commitIndex].files.push(fileName);
-
-                                // Update distributed files list
-                                if (!distributedFiles.includes(fileName)) {
-                                    distributedFiles.push(fileName);
-                                }
-                            }
-
-                            // Re-render the UI
-                            renderUnassignedFiles();
-                            renderSplitCommits();
-                        }
-                    }
-                });
-            }
-
-            // Add drag support for unassigned files
-            const unassignedFileItems = document.querySelectorAll<HTMLElement>('#changesSelect .change');
-            unassignedFileItems.forEach(item => {
-                item.addEventListener('dragstart', (e) => {
-                    (e as DragEvent).dataTransfer!.setData('text/plain', item.dataset.value!);
-                    (e as DragEvent).dataTransfer!.effectAllowed = 'move';
-                });
-            });
-        }
-
-        function removeFileFromAllCommits(fileName: string): void {
-            for (const commit of splitCommits) {
-                const index = commit.files.indexOf(fileName);
-                if (index > -1)
-                    commit.files.splice(index, 1);
-            }
-
-            // Also remove from distributed files if no longer in any commit
-            const stillExists = splitCommits.some(commit => commit.files.includes(fileName));
-            if (!stillExists) {
-                const index = distributedFiles.indexOf(fileName);
-                if (index > -1)
-                    distributedFiles.splice(index, 1);
-            }
-        }
-
-        function addSplitCommit(): void {
-            splitCommits.push({
-                message: commit!.message + ' #' + (splitCommits.length + 1),
-                files: []
-            });
-        }
-
-        // Add commit button
-        document.getElementById('addSplitCommitBtn')!.addEventListener('click', () => {
-            addSplitCommit();
-            renderSplitCommits();
         });
-
-        // Apply files to selected commit button
-        document.getElementById('applyToSelectedBtn')!.addEventListener('click', () => {
-            const selectedCommitElement = document.querySelector('.split-commit-entry.selected') ||
-                document.querySelector('.split-commit-entry');
-            if (!selectedCommitElement) return;
-
-            const commitIdx = Array.from(document.querySelectorAll('.split-commit-entry')).indexOf(selectedCommitElement);
-            if (commitIdx === -1) return;
-
-            const selectedFiles = Array.from(document.querySelectorAll<HTMLInputElement>('#changesSelect input[type="checkbox"]:checked'))
-                .map(checkbox => checkbox.closest('.change')!.getAttribute('data-value')!);
-
-            // Add selected files to the commit (avoiding duplicates)
-            selectedFiles.forEach(file => {
-                if (!splitCommits[commitIdx].files.includes(file)) {
-                    splitCommits[commitIdx].files.push(file);
-                    distributedFiles.push(file);
-                }
-            });
-
-            renderUnassignedFiles();
-            renderSplitCommits();
-
-            // Reset flags when files are reassigned during split
-            resetFlags();
-        });
-
-        dialog.addEventListener("close", (_event) => {
-            document.body.removeChild(dialog);
-        });
-
-        // Save button
-        document.getElementById('saveSplitBtn')!.addEventListener('click', () => {
-            // Block saving when a commit has files but no message
-            let hasInvalid = false;
-            let focusedInvalid = false;
-            document.querySelectorAll('.split-commit-entry').forEach((entry, idx) => {
-                const invalid = splitCommits[idx].files.length > 0 && splitCommits[idx].message.trim() === '';
-                entry.classList.toggle('invalid', invalid);
-                if (invalid) {
-                    hasInvalid = true;
-                    if (!focusedInvalid) {
-                        (entry.querySelector('.split-commit-message') as HTMLInputElement).focus();
-                        focusedInvalid = true;
-                    }
-                }
-            });
-            if (hasInvalid) return;
-
-            // Update the original commit with the split commits.
-            // Commits without assigned files are ignored - only non-empty splits make sense.
-            pushState();
-            commit.splitted = {
-                commits: splitCommits.filter(c => c.files.length > 0)
-            };
-            if (remainFiles.length > 0)
-                commit.splitted.files = remainFiles.map(f => f.filename);
-
-            dialog.close();
-            render(); // Refresh the main table to show the split commits
-        });
-
-        // Cancel button
-        document.getElementById('cancelSplitBtn')!.addEventListener("click", () => {
-            dialog.close();
-        });
-
-        // Initial render
-        renderUnassignedFiles();
-        renderSplitCommits();
     }
 
     function render(): void {
