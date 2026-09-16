@@ -565,6 +565,11 @@ tr[data-command=drop] {
   box-shadow: 0 0 0 1px var(--vscode-focusBorder);
 }
 
+.split-commit-entry.invalid {
+  border-color: var(--vscode-inputValidation-errorBorder, #f14c4c);
+  box-shadow: 0 0 0 1px var(--vscode-inputValidation-errorBorder, #f14c4c);
+}
+
 .split-commit-entry input.split-commit-message {
   color: var(--vscode-input-foreground, var(--fg));
   background-color: var(--vscode-input-background);
