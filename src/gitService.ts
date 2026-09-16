@@ -470,6 +470,14 @@ export class GitService {
         }));
     }
 
+    private shellQuote(value: string): string {
+        return `'${value.replace(/'/g, `'\\''`)}'`;
+    }
+
+    private quoteFiles(files: string[]): string {
+        return files.map(f => this.shellQuote(f)).join(' ');
+    }
+
     commandsToDo(commands: TodoCommand[]): string {
         const processedCommands = []
 
@@ -483,7 +491,7 @@ export class GitService {
                 // without launching an editor
                 processedCommands.push(`pick ${cmd.hash} # ${cmd.message}`);
                 processedCommands.push(`# ---hidden-exec`);
-                processedCommands.push(`exec git commit --amend --allow-empty -m "${cmd.message.replace(/"/g, '\\"')}"`);
+                processedCommands.push(`exec git commit --amend --allow-empty -m ${this.shellQuote(cmd.message)}`);
             }
             else if (cmd.command === 'edit') {
                 if (cmd.splitted && cmd.splitted.commits.length > 0) {
@@ -492,14 +500,14 @@ export class GitService {
 
                     let split_commands = ['git reset HEAD~1'];
                     for (const sc of cmd.splitted.commits) {
-                        split_commands.push(`git add ${sc.files.join(' ')}`);
-                        split_commands.push(`git commit -m "${sc.message.replace(/"/g, '\\"')}"`);
+                        split_commands.push(`git add -A -- ${this.quoteFiles(sc.files)}`);
+                        split_commands.push(`git commit -m ${this.shellQuote(sc.message)}`);
                     }
 
                     // Finishing with remaining files
                     if (cmd.splitted.files.length > 0) {
-                        split_commands.push(`git add ${cmd.splitted.files.join(' ')}`);
-                        split_commands.push(`git commit -m "${cmd.message}"`);
+                        split_commands.push(`git add -A -- ${this.quoteFiles(cmd.splitted.files)}`);
+                        split_commands.push(`git commit -m ${this.shellQuote(cmd.message)}`);
                     }
 
                     processedCommands.push(`# ---hidden-exec`);
