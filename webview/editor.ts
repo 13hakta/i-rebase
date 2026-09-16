@@ -421,14 +421,24 @@ declare function acquireVsCodeApi(): VsCodeApi;
     function formatChanges(changes: CommitChange[]): string {
         return changes.map(change => `
 			<label>
-				<div class="change" data-value="${change.filename}" draggable="true">
+				<div class="change" data-value="${escapeHtml(change.filename)}" draggable="true">
 					<div>
 						<input type="checkbox">
-						${change.filename}
+						${escapeHtml(change.filename)}
 					</div>
 					<div class="mod">${MODIFICATIONS[change.modification]}</div>
 				</div>
 			</label>`).join('');
+    }
+
+    /** Escape a string for safe interpolation into HTML */
+    function escapeHtml(s: string): string {
+        return s
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     // Function to open the split editor dialog
@@ -450,7 +460,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
         dialog.innerHTML = `
 			<div class="dialog-header">
-				<div class="dialog-title">Split commit: ${commit.message}</div>
+				<div class="dialog-title">Split commit: ${escapeHtml(commit.message)}</div>
 			</div>
 			<div class="split-container">
 				<div class="changes-selection">
@@ -507,16 +517,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
                 commitDiv.innerHTML = `
 					<div class="split-commit-header">
-						<input type="text" class="split-commit-message" value="${splitCommit.message}" 
+						<input type="text" class="split-commit-message" 
 							placeholder="Commit message" required />
 						<button class="up-commit">↑</button>
 						<button class="down-commit">↓</button>
 						<button class="remove-commit">×</button>
 					</div>
 					<div class="split-commit-files">
-                        ${splitCommit.files.map(file => `<div class="file-item" draggable="true">${file}<span class="remove-file">×</span></div>`).join('')}
+                        ${splitCommit.files.map(file => `<div class="file-item" draggable="true">${escapeHtml(file)}<span class="remove-file">×</span></div>`).join('')}
 					</div>
 				`;
+
+                // Set value via property to safely handle any characters in the message
+                (commitDiv.querySelector('.split-commit-message') as HTMLInputElement).value = splitCommit.message;
 
                 container.appendChild(commitDiv);
             });
