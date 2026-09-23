@@ -512,11 +512,12 @@ tr[data-command=drop] {
   background: var(--vscode-panel-background);
   border: 1px solid var(--vscode-panel-border);
   border-radius: 12px;
-  width: 80%;
-  height: 50vh;
+  width: min(1100px, 92vw);
+  height: min(75vh, 90%);
+  max-height: calc(100vh - 4em);
   padding: 0;
   user-select: none;
-  overflow-y: auto;
+  overflow: hidden;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   display: flex;
   justify-content: space-between;
@@ -537,9 +538,18 @@ tr[data-command=drop] {
   padding: 0 20px;
 }
 
+/* Header, toolbar row and buttons panel stay fixed; only the panels below scroll */
+.dialog-header,
+.split-container,
+.buttons-panel {
+  flex-shrink: 0;
+}
+
 .split-container2 {
-  flex-grow: 1;
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
 }
 
 .commit-container {
@@ -589,7 +599,12 @@ tr[data-command=drop] {
 .file-item {
   padding: 2px;
   display: flex;
-  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.file-item .file-path {
+  flex: 1 1 auto;
 }
 
 .file-item:hover {
@@ -634,6 +649,8 @@ tr[data-command=drop] {
 .change>.mod {
   color: var(--muted);
   padding-left: 1em;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 #changesSelect {
@@ -641,6 +658,39 @@ tr[data-command=drop] {
   border-radius: 4px;
   border: 1px solid var(--border);
   width: 50%;
+  box-sizing: border-box;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* The commit panels of the split dialog scroll independently (scoped: #commitsContainer is also used by the main editor view) */
+.split-editor-dialog #commitsContainer {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* File name + muted directory path rendering */
+.file-name {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.file-path {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.change .file-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
 .commit-container>label,
