@@ -36,10 +36,10 @@ interface SplitDialogOptions {
     function formatChanges(changes: SplitDialogCommitChange[]): string {
         return changes.map(change => `
 			<label>
-				<div class="change" data-value="${escapeHtml(change.filename)}" draggable="true" title="Double-click to assign to the selected commit">
-					<div>
+				<div class="change" data-value="${escapeHtml(change.filename)}" draggable="true" title="${escapeHtml(change.filename)} — double-click to assign to the selected commit">
+					<div class="file-label">
 						<input type="checkbox">
-						${escapeHtml(change.filename)}
+						${formatFileLabel(change.filename)}
 					</div>
 					<div class="mod">${MODIFICATIONS[change.modification]}</div>
 				</div>
@@ -54,6 +54,63 @@ interface SplitDialogOptions {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    /** Split a repository path into directory (with trailing slash) and file name */
+    function splitFilePath(path: string): { dir: string; name: string } {
+        const idx = path.lastIndexOf('/');
+        if (idx === -1) return { dir: '', name: path };
+        return { dir: path.slice(0, idx + 1), name: path.slice(idx + 1) };
+    }
+
+    /** Render a path as a prominent file name plus a muted directory part */
+    function formatFileLabel(path: string): string {
+        const { dir, name } = splitFilePath(path);
+        const nameSpan = `<span class="file-name">${escapeHtml(name)}</span>`;
+        const dirSpan = dir ? `<span class="file-path">${escapeHtml(dir)}</span>` : '';
+        return nameSpan + dirSpan;
+    }
+
+    /** Auto-scroll a scrollable panel while dragging a file near its top/bottom edge */
+    function setupAutoScroll(container: HTMLElement): void {
+        const EDGE = 24;
+        const MAX_STEP = 12;
+        let scrollDelta = 0;
+        let rafId = 0;
+
+        const step = () => {
+            if (scrollDelta !== 0) container.scrollTop += scrollDelta;
+            rafId = requestAnimationFrame(step);
+        };
+
+        container.addEventListener('dragenter', () => {
+            if (!rafId) rafId = requestAnimationFrame(step);
+        });
+
+        container.addEventListener('dragover', (e) => {
+            const rect = container.getBoundingClientRect();
+            const y = (e as DragEvent).clientY - rect.top;
+            if (y < EDGE)
+                scrollDelta = -Math.max(1, Math.min(MAX_STEP, EDGE - y));
+            else if (y > rect.height - EDGE)
+                scrollDelta = Math.max(1, Math.min(MAX_STEP, y - (rect.height - EDGE)));
+            else
+                scrollDelta = 0;
+        });
+
+        const stop = () => {
+            scrollDelta = 0;
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = 0;
+            }
+        };
+
+        container.addEventListener('dragleave', (e) => {
+            if (!container.contains((e as DragEvent).relatedTarget as Node | null)) stop();
+        });
+        container.addEventListener('drop', stop);
+        window.addEventListener('dragend', stop);
     }
 
     // Function to open the split editor dialog
@@ -97,6 +154,10 @@ interface SplitDialogOptions {
 
         document.body.appendChild(dialog);
         dialog.showModal();
+
+        // Independent auto-scrolling panels while dragging files
+        setupAutoScroll(document.getElementById('changesSelect')!);
+        setupAutoScroll(document.getElementById('commitsContainer')!);
 
         // Prefill
         if (options.existing && options.existing.commits)
@@ -148,7 +209,7 @@ interface SplitDialogOptions {
 						<button class="remove-commit">×</button>
 					</div>
 					<div class="split-commit-files">
-                        ${splitCommit.files.map(file => `<div class="file-item" draggable="true">${escapeHtml(file)}<span class="remove-file">×</span></div>`).join('')}
+                        ${splitCommit.files.map(file => `<div class="file-item" data-value="${escapeHtml(file)}" draggable="true" title="${escapeHtml(file)}">${formatFileLabel(file)}<span class="remove-file">×</span></div>`).join('')}
 					</div>
 				`;
 
@@ -195,7 +256,7 @@ interface SplitDialogOptions {
                 btn.addEventListener('click', (e) => {
                     const commitElement = (e.target as HTMLElement).closest('.split-commit-entry')!;
                     const commitIdx = Array.from(document.querySelectorAll('.split-commit-entry')).indexOf(commitElement);
-                    const fileToRemove = (e.target as Node).previousSibling!.textContent!;
+                    const fileToRemove = ((e.target as HTMLElement).closest('.file-item') as HTMLElement)!.dataset.value!;
                     const commit = splitCommits[commitIdx];
                     if (commit) {
                         commit.files = commit.files.filter(file => file !== fileToRemove);
@@ -265,7 +326,7 @@ interface SplitDialogOptions {
 
             fileItems.forEach(item => {
                 item.addEventListener('dragstart', (e) => {
-                    (e as DragEvent).dataTransfer!.setData('text/plain', item.textContent!.replace(/\×$/, '').trim());
+                    (e as DragEvent).dataTransfer!.setData('text/plain', item.dataset.value!);
                     (e as DragEvent).dataTransfer!.effectAllowed = 'move';
                 });
             });
