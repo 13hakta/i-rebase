@@ -63,11 +63,6 @@
         "category": "I-Rebase"
       },
       {
-        "command": "irebase.initRebaseLast50Commits:scm",
-        "title": "Interactive Rebase - 50 Last Commits",
-        "category": "I-Rebase"
-      },
-      {
         "command": "irebase.showOutput",
         "title": "Show Log",
         "category": "I-Rebase"
@@ -129,6 +124,11 @@
           ],
           "default": "buttons",
           "markdownDescription": "View kind of commit actions set"
+        },
+        "irebase.autoCheckConflicts": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Automatically check the rebase plan for conflicts after every change (runs silently, results are highlighted in the editor)"
         }
       }
     },
