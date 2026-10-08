@@ -2,7 +2,7 @@
   "name": "i-rebase",
   "displayName": "I-Rebase",
   "description": "Interactive git rebase editor",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "publisher": "13hakta",
   "license": "MIT",
   "author": {
@@ -163,12 +163,11 @@
   "devDependencies": {
     "@types/node": "^20.10.8",
     "@types/vscode": "^1.93.0",
-    "@vscode/vsce": "^3.9.1",
+    "@vscode/vsce": "^4.0.0",
     "terser": "^5.31.6",
     "typescript": "^5.4.0"
   },
   "extensionDependencies": [
     "vscode.git"
-  ],
-  "dependencies": {}
+  ]
 }
