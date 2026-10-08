@@ -32,7 +32,8 @@ Split dialog
 4. Before applying changes you can check for probable conflicts with "Check conflicts" button on toolbar.
 5. To find commits modifying same files select commit and click "Intersections" button on toolbar - main and dependant commits will be highlighted.
 6. You may undo / redo operations.
-7. Save your changes and close window to continue rebase process.
+7. Click a commit hash to open its diff in a diff editor.
+8. Save your changes and close window to continue rebase process.
 
 ## Settings
 
@@ -40,6 +41,7 @@ The I-Rebase extension provides the following settings:
 
 - `irebase.reverseOrder`: Show commit list in reverse order (newer higher). Default is `false`.
 - `irebase.actionViewKind`: View kind of commit actions set. Available options are `buttons` (set of buttons) and `dropdown` (dropdown list). Default is `buttons`.
+- `irebase.autoCheckConflicts`: Automatically check the rebase plan for conflicts after every change (runs silently, results are highlighted in the editor). Default is `false`.
 
 ## Requirements
 
