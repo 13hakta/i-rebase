@@ -1,6 +1,26 @@
 import * as vscode from 'vscode';
-import { GitService } from './gitService';
-import { TodoCommand, CommitChange } from './types';
+import { GitService, logGitError } from './gitService';
+import { TodoCommand, CommitChange } from '../common/types';
+
+// Scheme serving read-only file content from arbitrary git revisions.
+// The built-in git: scheme only resolves paths that exist in the working tree
+// of the current checkout, which breaks commit diffs - so we render content
+// ourselves via `git show <rev>:<path>`.
+const IREBASE_GIT_SCHEME = 'irebase-git';
+
+// Object id of the empty tree - parent of root commits
+const EMPTY_TREE_ID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+class GitContentProvider implements vscode.TextDocumentContentProvider {
+    constructor(private readonly gitService: GitService) { }
+
+    async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+        // uri: irebase-git:/<path>?<commit>
+        const commit = uri.query;
+        const filePath = uri.path.replace(/^\//, '');
+        return this.gitService.getCommitFileContent(commit, filePath);
+    }
+}
 
 export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
     public static readonly viewType = 'irebase.gitRebaseTodoEditor';
@@ -11,7 +31,13 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
             webviewOptions: { retainContextWhenHidden: true },
             supportsMultipleEditorsPerDocument: false
         });
-        return providerRegistration;
+
+        // Read-only git content provider for commit diffs
+        const contentProvider = vscode.workspace.registerTextDocumentContentProvider(
+            IREBASE_GIT_SCHEME, new GitContentProvider(new GitService())
+        );
+
+        return vscode.Disposable.from(providerRegistration, contentProvider);
     }
 
     constructor(private readonly context: vscode.ExtensionContext) { }
@@ -36,6 +62,7 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
         const options = {
             reverseOrder: config.get('irebase.reverseOrder', false),
             actionViewKind: config.get('irebase.actionViewKind', 'buttons'),
+            autoCheckConflicts: config.get('irebase.autoCheckConflicts', false),
             continueMode: queryParams.has('continue')
         };
 
@@ -102,13 +129,16 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
                         await this.commitChanges(view, gitService, message.hash);
                         break;
                     case 'checkConflicts':
-                        await this.checkRebaseConflicts(view, gitService, message.commands);
+                        await this.checkRebaseConflicts(view, gitService, message.commands, message.silent === true);
                         break;
                     case 'changeOrder':
                         await config.update('irebase.reverseOrder', message.order, vscode.ConfigurationTarget.Global);
                         break;
                     case 'findIntersections':
                         await this.findIntersections(view, gitService, message.hash, message.all_commits);
+                        break;
+                    case 'openDiff':
+                        await this.openCommitDiff(gitService, message.hash);
                         break;
                 }
             },
@@ -181,14 +211,48 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
         webview.postMessage({ type: 'commitChanges', hash: hash, changes: changes });
     }
 
+    // Open a commit diff: the commit's tree against its first parent
+    private async openCommitDiff(gitService: GitService, hash: string) {
+        try {
+            const { stdout } = await gitService.runGitPublic(['rev-list', '--parents', '--no-walk', hash]);
+            const parents = stdout.trim().split(/\s+/).slice(1);
+            const parentCommit = parents.length > 0 ? parents[0] : EMPTY_TREE_ID;
+
+            const files = await gitService.getCommitDiffFiles(hash);
+            if (files.length === 0) {
+                vscode.window.showInformationMessage(`Commit ${hash.substring(0, 8)} has no file changes`);
+                return;
+            }
+
+            const gitUri = (commit: string, filePath: string) => vscode.Uri.from({
+                scheme: IREBASE_GIT_SCHEME,
+                path: `/${filePath}`,
+                query: commit
+            });
+
+            const entries: Array<[vscode.Uri, vscode.Uri, vscode.Uri]> = files.map(f => [
+                gitUri(parentCommit, f.oldPath ?? f.path),
+                gitUri(hash, f.path),
+                vscode.Uri.file(`${gitService.getWorkspaceRoot()}/${f.path}`)
+            ]);
+
+            const title = `${hash.substring(0, 8)} — ${files.length} file${files.length > 1 ? 's' : ''} changed`;
+            await vscode.commands.executeCommand('vscode.changes', title, entries);
+        } catch (error) {
+            logGitError(`Failed to open diff for commit ${hash}`, error);
+            vscode.window.showErrorMessage(`Failed to open diff for commit ${hash}`);
+        }
+    }
+
     private async findIntersections(webview: vscode.Webview, gitService: GitService, hash: string, allCommits: string[]) {
         const intersections: string[] = await gitService.findIntersections(hash, allCommits);
         webview.postMessage({ type: 'intersections', hash: hash, intersections: intersections});
     }
 
-    private async checkRebaseConflicts(webview: vscode.Webview, gitService: GitService, commands: TodoCommand[]) {
+    private async checkRebaseConflicts(webview: vscode.Webview, gitService: GitService, commands: TodoCommand[], silent: boolean = false) {
         if (commands.length === 0) {
-            vscode.window.showWarningMessage('No commits to check for rebase plan conflicts.');
+            if (!silent)
+                vscode.window.showWarningMessage('No commits to check for rebase plan conflicts');
             return;
         }
 
@@ -197,7 +261,8 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
             const result = await gitService.checkRebasePlan(commands);
 
             if (result.success) {
-                vscode.window.showInformationMessage('No rebase conflicts found');
+                if (!silent)
+                    vscode.window.showInformationMessage('No rebase conflicts found');
 
                 // Explicitly send a message to clear any existing conflict flags
                 webview.postMessage({
@@ -205,24 +270,33 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
                 });
             } else if (result.error) {
                 // The check itself failed – do not report a false conflict
-                vscode.window.showWarningMessage(`Cannot check rebase plan conflicts: ${result.error}`);
+                if (!silent)
+                    vscode.window.showWarningMessage(`Cannot check rebase plan conflicts: ${result.error}`);
                 webview.postMessage({
                     type: 'clearConflicts'
                 });
             } else {
                 if (result.hash) {
-                    vscode.window.showErrorMessage('Conflict found in rebase plan');
+                    if (!silent)
+                        vscode.window.showErrorMessage('Conflict found in rebase plan');
                     webview.postMessage({
                         type: 'conflictFound',
                         hash: result.hash,
                         conflictFiles: result.conflictFiles
                     });
                 }
-                else vscode.window.showErrorMessage('Conflict found in rebase plan');
+                else {
+                    if (!silent)
+                        vscode.window.showErrorMessage('Conflict found in rebase plan');
+                    webview.postMessage({
+                        type: 'clearConflicts'
+                    });
+                }
             }
         } catch (error) {
             console.error('Error checking rebase plan conflicts:', error);
-            vscode.window.showErrorMessage(`Error checking rebase plan conflicts: ${error instanceof Error ? error.message : String(error)}`);
+            if (!silent)
+                vscode.window.showErrorMessage(`Error checking rebase plan conflicts: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -256,6 +330,7 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https:; font-src ${webview.cspSource};">
     <title>Interactive git rebase</title>
     <link href="${styleUri}" rel="stylesheet" nonce="${nonce}">
 </head>
@@ -310,6 +385,7 @@ export class RebaseEditorProvider implements vscode.CustomTextEditorProvider {
     <script nonce="${nonce}">
         let reverseOrder = ${options.reverseOrder};
         const actionViewKind = "${options.actionViewKind}";
+        const autoCheckConflicts = ${options.autoCheckConflicts};
     </script>
     <script nonce="${nonce}" src="${splitDialogUri}"></script>
     <script nonce="${nonce}" src="${scriptUri}"></script>
