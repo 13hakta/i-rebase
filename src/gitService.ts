@@ -1,11 +1,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { Command, CommitChange, RebaseCommand, ShortTodoCommand, CommitInfo, GitInfo, ConflictCheck, TodoCommand } from './types';
+import { Command, CommitChange, RebaseCommand, ShortTodoCommand, CommitInfo, GitInfo, ConflictCheck, TodoCommand } from '../common/types';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+// Object id of the empty tree - used as the "parent" of root commits
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+function sequenceEditor(): string {
+    return process.platform === 'win32' ? 'code.cmd --wait' : 'code --wait';
+}
 
 const outputChannel = vscode.window.createOutputChannel('I-Rebase');
 
@@ -78,6 +85,11 @@ export function logGitError(context: string, error: any) {
 export class GitService {
     private cache_info = new Map<string, GitInfo>();
     private cache_files = new Map<string, string[]>();
+    private cache_full = new Map<string, string>();
+    // Incremental state of the last conflict-check simulation: plan - full hashes
+    // already merged in order; prefixTrees[i] - accumulated tree after applying
+    // the first i+1 commits; baseRef - commit the simulation started from.
+    private check_state?: { baseRef: string; plan: string[]; prefixTrees: string[] };
     private workspaceRoot: string | undefined;
 
     constructor() {
@@ -89,9 +101,34 @@ export class GitService {
         return this.workspaceRoot;
     }
 
+    private async getGitDir(): Promise<string | undefined> {
+        if (!this.workspaceRoot)
+            return undefined;
+
+        const { stdout } = await this.runGit(['rev-parse', '--git-dir']);
+        const gitDir = stdout.trim().replace(/^"|"$/g, '');
+
+        return path.isAbsolute(gitDir) ? gitDir : path.join(this.workspaceRoot, gitDir);
+    }
+
+    // Run git without a shell
+    private runGit(args: string[], maxBuffer: number = 10 * 1024 * 1024) {
+        return execFileAsync('git', args, {
+            cwd: this.workspaceRoot,
+            maxBuffer
+        });
+    }
+
+    // Public passthrough for collaborators outside the class (e.g. diff UI)
+    runGitPublic(args: string[], maxBuffer: number = 10 * 1024 * 1024) {
+        return this.runGit(args, maxBuffer);
+    }
+
     public clear() {
         this.cache_info.clear();
         this.cache_files.clear();
+        this.cache_full.clear();
+        this.check_state = undefined;
     }
 
     // Parse git log output in custom format
@@ -160,9 +197,12 @@ export class GitService {
             if (!this.workspaceRoot)
                 throw new Error('No workspace root found');
 
-            await execAsync(`git rebase -i ${baseCommit}`, { cwd: this.workspaceRoot, env: {
+            await execFileAsync('git', ['rebase', '-i', baseCommit], {
+                cwd: this.workspaceRoot,
+                maxBuffer: 10 * 1024 * 1024,
+                env: {
                     ...process.env,
-                    GIT_SEQUENCE_EDITOR: 'code --wait'
+                    GIT_SEQUENCE_EDITOR: sequenceEditor()
                 }
             });
         } catch (error: any) {
@@ -176,9 +216,12 @@ export class GitService {
             if (!this.workspaceRoot)
                 throw new Error('No workspace root found');
 
-            await execAsync(`git rebase --continue`, { cwd: this.workspaceRoot, env: {
+            await execFileAsync('git', ['rebase', '--continue'], {
+                cwd: this.workspaceRoot,
+                maxBuffer: 10 * 1024 * 1024,
+                env: {
                     ...process.env,
-                    GIT_SEQUENCE_EDITOR: 'code --wait'
+                    GIT_SEQUENCE_EDITOR: sequenceEditor()
                 }
             });
         } catch (error: any) {
@@ -193,7 +236,7 @@ export class GitService {
             if (!this.workspaceRoot)
                 throw new Error('No workspace root found');
 
-            await execAsync(`git rebase --abort`, { cwd: this.workspaceRoot });
+            await this.runGit(['rebase', '--abort']);
         } catch (error: any) {
             vscode.window.showErrorMessage(`Error aborting rebase: ${error instanceof Error ? error.message : String(error)}`);
             console.error('Error aborting rebase:', error);
@@ -203,13 +246,10 @@ export class GitService {
 
     async fetchGitInfo(hashes: string[]) {
         try {
-            const hashList = hashes.join(' ');
-
-            // %H - full hash, %an - author, %cr - date, %D - refs (branches/tags)
-            const { stdout, stderr } = await execAsync(
-                `git show -s --format="%h|%an|%ad|%D" ${hashList} --no-walk --date=short`,
-                { cwd: this.workspaceRoot }
-            )
+            // %h - short hash, %an - author, %ad - date, %D - refs (branches/tags)
+            const { stdout, stderr } = await this.runGit(
+                ['show', '-s', '--format=%h|%an|%ad|%D', '--no-walk', '--date=short', ...hashes]
+            );
 
             if (!stdout) return;
 
@@ -229,10 +269,12 @@ export class GitService {
             if (!this.workspaceRoot)
                 return;
 
-            // Check if .git/rebase-merge directory exists
-            const { stdout } = await execAsync('git rev-parse --git-dir', { cwd: this.workspaceRoot });
-            const gitDir = stdout.trim();
-            const rebaseMergeDir = path.join(this.workspaceRoot, gitDir, 'rebase-merge');
+            // Check if rebase-merge directory exists inside the git dir
+            const gitDir = await this.getGitDir();
+            if (!gitDir)
+                return;
+
+            const rebaseMergeDir = path.join(gitDir, 'rebase-merge');
             const is_rebase_active = fs.existsSync(rebaseMergeDir);
 
             if (is_rebase_active) {
@@ -249,10 +291,12 @@ export class GitService {
             if (!this.workspaceRoot)
                 return false;
 
-            // Check if .git/rebase-merge directory exists
-            const { stdout } = await execAsync('git rev-parse --git-dir', { cwd: this.workspaceRoot });
-            const gitDir = stdout.trim();
-            const rebaseMergeDir = path.join(this.workspaceRoot, gitDir, 'rebase-merge');
+            // Check if rebase-merge directory exists inside the git dir
+            const gitDir = await this.getGitDir();
+            if (!gitDir)
+                return false;
+
+            const rebaseMergeDir = path.join(gitDir, 'rebase-merge');
 
             return fs.existsSync(rebaseMergeDir);
         } catch (error) {
@@ -266,9 +310,11 @@ export class GitService {
             return;
         }
 
-        const { stdout } = await execAsync('git rev-parse --git-dir', { cwd: this.workspaceRoot });
-        const gitDir = stdout.trim();
-        const todoPath = path.join(this.workspaceRoot, gitDir, 'rebase-merge', 'git-rebase-todo');
+        const gitDir = await this.getGitDir();
+        if (!gitDir)
+            return;
+
+        const todoPath = path.join(gitDir, 'rebase-merge', 'git-rebase-todo');
         const targetUri = vscode.Uri.file(todoPath).with({ query: 'continue' });
 
         try {
@@ -288,7 +334,7 @@ export class GitService {
             return null;
 
         try {
-            const { stdout } = await execAsync(`git rev-parse --verify --quiet "${ref.trim()}^{commit}"`, { cwd: this.workspaceRoot });
+            const { stdout } = await this.runGit(['rev-parse', '--verify', '--quiet', `${ref.trim()}^{commit}`]);
             const hash = stdout.trim();
             return hash || null;
         } catch (error) {
@@ -304,7 +350,7 @@ export class GitService {
 
         for (const ref of ['@{push}', '@{upstream}']) {
             try {
-                const { stdout } = await execAsync(`git merge-base HEAD "${ref}"`, { cwd: this.workspaceRoot });
+                const { stdout } = await this.runGit(['merge-base', 'HEAD', ref]);
                 const hash = stdout.trim();
                 if (hash)
                     return hash;
@@ -323,7 +369,7 @@ export class GitService {
             return false;
 
         try {
-            await execAsync('git stash -u', { cwd: this.workspaceRoot });
+            await this.runGit(['stash', '-u']);
             return true;
         } catch (error) {
             logGitError('Failed to stash changes', error);
@@ -340,11 +386,11 @@ export class GitService {
 
         try {
             // Try to get the nth last commit first
-            const { stdout } = await execAsync(`git rev-parse HEAD~${n}`, { cwd: this.workspaceRoot });
+            const { stdout } = await this.runGit(['rev-parse', `HEAD~${n}`]);
             return stdout.trim();
         } catch (error) {
             try {
-                const { stdout } = await execAsync('git rev-list --max-parents=0 HEAD', { cwd: this.workspaceRoot });
+                const { stdout } = await this.runGit(['rev-list', '--max-parents=0', 'HEAD']);
                 return stdout.trim();
             } catch (error2) {
                 vscode.window.showErrorMessage(`Error getting nth last commit: ${error2 instanceof Error ? error2.message : String(error2)}`);
@@ -360,10 +406,9 @@ export class GitService {
             return [];
 
         try {
-            const { stdout, stderr } = await execAsync(
-                `git show --name-status --pretty=format: ${hash}`,
-                { cwd: this.workspaceRoot }
-            )
+            const { stdout, stderr } = await this.runGit(
+                ['show', '--name-status', '--pretty=format:', hash]
+            );
 
             if (!stdout) return [];
 
@@ -387,11 +432,12 @@ export class GitService {
         for (const line of lines) {
             if (!line.trim()) continue;
 
-            const parts = line.split('\t', 2);
+            const parts = line.split('\t');
             if (parts.length < 2) continue;
 
             const modification = parts[0];
-            const filename = parts[1];
+            const isRenameOrCopy = /^[RC]/.test(modification) && parts.length >= 3;
+            const filename = isRenameOrCopy ? parts[2] : parts[1];
 
             changes.push({
                 modification,
@@ -505,7 +551,7 @@ export class GitService {
                     }
 
                     // Finishing with remaining files
-                    if (cmd.splitted.files.length > 0) {
+                    if (cmd.splitted.files && cmd.splitted.files.length > 0) {
                         split_commands.push(`git add -A -- ${this.quoteFiles(cmd.splitted.files)}`);
                         split_commands.push(`git commit -m ${this.shellQuote(cmd.message)}`);
                     }
@@ -523,14 +569,18 @@ export class GitService {
         if (!this.workspaceRoot)
             return [];
 
-        if (this.cache_files.has(hash))
-            return this.cache_files.get(hash) || [];
+        // Normalize to the full hash first: single lookups come with short hashes
+        // from the webview, while batch results are cached under full ones - one
+        // shared key format keeps the cache consistent.
+        const full = await this.resolveFullHash(hash);
+
+        if (this.cache_files.has(full))
+            return this.cache_files.get(full) || [];
 
         try {
-            const { stdout, stderr } = await execAsync(
-                `git show --name-only --format="" ${hash}`,
-                { cwd: this.workspaceRoot }
-            )
+            const { stdout, stderr } = await this.runGit(
+                ['show', '--name-only', '--format=', full]
+            );
 
             if (!stdout) return [];
 
@@ -541,7 +591,7 @@ export class GitService {
 
             const files = stdout.split('\n').map(f => f.trim()).filter(Boolean);
 
-            this.cache_files.set(hash, files);
+            this.cache_files.set(full, files);
 
             return files;
         } catch (e) {
@@ -551,24 +601,133 @@ export class GitService {
         return [];
     }
 
+    // Fetch changed files for many commits in a few batched git calls.
+    // Output format: a "%H" hash line followed by one file path per line.
+    private async getCommitFilesBatch(hashes: string[]): Promise<Map<string, string[]>> {
+        const result = new Map<string, string[]>();
+
+        // Serve from cache first
+        const pending: string[] = [];
+        for (const hash of hashes) {
+            const cached = this.cache_files.get(hash);
+            if (cached)
+                result.set(hash, cached);
+            else
+                pending.push(hash);
+        }
+
+        const CHUNK_SIZE = 100;
+        for (let i = 0; i < pending.length; i += CHUNK_SIZE) {
+            const chunk = pending.slice(i, i + CHUNK_SIZE);
+
+            try {
+                const { stdout, stderr } = await this.runGit(
+                    ['log', '--no-walk', '--format=%H', '--name-only', ...chunk]
+                );
+
+                if (stderr && !stderr.includes('warning:'))
+                    console.error('Git error:', stderr);
+
+                let currentHash = '';
+                for (const line of stdout.split('\n')) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+
+                    if (/^[a-f0-9]{40}$/.test(trimmed)) {
+                        currentHash = trimmed;
+                        result.set(currentHash, []);
+                    } else if (currentHash) {
+                        result.get(currentHash)!.push(trimmed);
+                    }
+                }
+            } catch (e) {
+                console.error('Git batch files fetch failed:', e);
+            }
+        }
+
+        // Cache whatever was resolved
+        for (const [hash, files] of result) {
+            if (!this.cache_files.has(hash))
+                this.cache_files.set(hash, files);
+        }
+
+        return result;
+    }
+
     async findIntersections(mainHash: string, allCommits: string[]): Promise<string[]> {
-        const intersections: string[] = [];
         const mainCommitFiles = await this.getCommitFiles(mainHash);
+        const mainFileSet = new Set(mainCommitFiles);
 
-        const metaPromises = allCommits.map(async (hash) => {
-            if (hash === mainHash) return;
+        const others = allCommits.filter(h => h !== mainHash);
+        const filesByHash = await this.getCommitFilesBatch(others);
 
-            const files = await this.getCommitFiles(hash);
-            return { hash: hash, files };
-        });
-        const commitFilesMap = await Promise.all(metaPromises);
+        // Full hash -> the id the caller passed (short form from the webview)
+        const idByFull = new Map<string, string>();
+        for (const id of allCommits)
+            idByFull.set(await this.resolveFullHash(id), id);
+        const fullMain = await this.resolveFullHash(mainHash);
 
-        commitFilesMap.forEach(commit => {
-            if (commit && commit.files.some(file => mainCommitFiles.includes(file)))
-                intersections.push(commit.hash);
-        });
+        const intersections: string[] = [];
+        for (const [hash, files] of filesByHash) {
+            if (hash === fullMain)
+                continue;
+            if (files.some(file => mainFileSet.has(file))) {
+                const id = idByFull.get(hash);
+                if (id)
+                    intersections.push(id);
+            }
+        }
 
         return intersections;
+    }
+
+    // Full 40-char hash of a commit, used to normalize cache keys below.
+    // Unresolvable ids map to themselves so callers never see a throw.
+    private async resolveFullHash(hash: string): Promise<string> {
+        const cached = this.cache_full.get(hash);
+        if (cached)
+            return cached;
+
+        try {
+            const { stdout } = await this.runGit(['rev-parse', '--verify', '--quiet', `${hash}^{commit}`]);
+            const full = stdout.trim();
+            if (/^[a-f0-9]{40}$/.test(full)) {
+                this.cache_full.set(hash, full);
+                return full;
+            }
+        } catch (e) {
+            // fall through
+        }
+
+        this.cache_full.set(hash, hash);
+        return hash;
+    }
+
+    // Changed-file entries of a commit: {status, oldPath, path} per file
+    async getCommitDiffFiles(hash: string): Promise<Array<{ status: string; oldPath?: string; path: string }>> {
+        const { stdout } = await this.runGit([
+            'diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-M', hash
+        ]);
+        const files: Array<{ status: string; oldPath?: string; path: string }> = [];
+
+        for (const line of stdout.split('\n')) {
+            if (!line.trim()) continue;
+            const parts = line.split('\t');
+            if (parts[0].startsWith('R') || parts[0].startsWith('C')) {
+                if (parts.length >= 3)
+                    files.push({ status: parts[0][0], oldPath: parts[1], path: parts[2] });
+            } else if (parts.length >= 2) {
+                files.push({ status: parts[0], path: parts[1] });
+            }
+        }
+
+        return files;
+    }
+
+    // File content at a given commit for the firebase: content provider
+    async getCommitFileContent(commit: string, filePath: string): Promise<string> {
+        const { stdout } = await this.runGit(['show', `${commit}:${filePath}`]);
+        return stdout;
     }
 
     // Check if the rebase plan will have conflicts when applied in the given order.
@@ -582,15 +741,17 @@ export class GitService {
 
         let baseRef = baseCommit;
         try {
-            const gitDir = (await execAsync('git rev-parse --git-dir', { cwd: this.workspaceRoot })).stdout.trim();
-            const donePath = path.join(this.workspaceRoot, gitDir, 'rebase-merge', 'done');
-            if (fs.existsSync(donePath)) {
-                const done = fs.readFileSync(donePath, 'utf-8');
-                if (done.split('\n').some(line => line.trim().length > 0 && !line.startsWith('#'))) {
-                    const { stdout } = await execAsync('git rev-parse HEAD', { cwd: this.workspaceRoot });
-                    const head = stdout.trim();
-                    if (head && /^[a-f0-9]{40}$/.test(head))
-                        baseRef = head;
+            const gitDir = await this.getGitDir();
+            if (gitDir) {
+                const donePath = path.join(gitDir, 'rebase-merge', 'done');
+                if (fs.existsSync(donePath)) {
+                    const done = fs.readFileSync(donePath, 'utf-8');
+                    if (done.split('\n').some(line => line.trim().length > 0 && !line.startsWith('#'))) {
+                        const { stdout } = await this.runGit(['rev-parse', 'HEAD']);
+                        const head = stdout.trim();
+                        if (head && /^[a-f0-9]{40}$/.test(head))
+                            baseRef = head;
+                    }
                 }
             }
         } catch (e) {
@@ -610,9 +771,7 @@ export class GitService {
         // against full hashes returned by rev-list would fail.
         let commitsToApply: string[];
         try {
-            const { stdout } = await execAsync(
-                `git rev-parse ${commitsToApplyRaw.map(h => `"${h}"`).join(' ')}`,
-                { cwd: this.workspaceRoot });
+            const { stdout } = await this.runGit(['rev-parse', ...commitsToApplyRaw]);
             const resolved = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
             if (resolved.length !== commitsToApplyRaw.length || resolved.some(h => !/^[a-f0-9]{40}$/.test(h)))
                 throw new Error('Unexpected rev-parse output');
@@ -627,7 +786,7 @@ export class GitService {
 
         // Helper: get tree hash of a commit, returns 40-char hex or throws
         const getTreeHash = async (commit: string): Promise<string> => {
-            const { stdout } = await execAsync(`git rev-parse "${commit}^{tree}"`, { cwd: this.workspaceRoot });
+            const { stdout } = await this.runGit(['rev-parse', `${commit}^{tree}`]);
             const tree = stdout.trim();
             if (!tree || !/^[a-f0-9]{40}$/.test(tree)) {
                 throw new Error(`Invalid tree hash for commit ${commit}`);
@@ -637,20 +796,46 @@ export class GitService {
 
         const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
-        // Current tree we have after applying previous commits
+        // Current tree we have after applying previous commits.
+        // Resume from the cached prefix if the base and the plan's beginning are
+        // unchanged since the last check - re-simulating identical commits would
+        // just repeat the same merges, so only the suffix starting at the first
+        // difference is re-checked. Merge simulation is deterministic: the same
+        // base + same commit sequence always yields the same accumulated tree.
         let currentTree: string;
+        let startIdx = 0;
+        const cached = this.check_state;
+        if (cached && cached.baseRef === baseRef) {
+            // Resume only within the verified prefix: prefixTrees holds the
+            // accumulated tree per simulated commit and is shorter than the plan
+            // when the previous run stopped on a conflict - positions beyond it
+            // were never simulated and must be re-checked.
+            const shared = Math.min(cached.prefixTrees.length, commitsToApply.length);
+            let common = 0;
+            while (common < shared && cached.plan[common] === commitsToApply[common])
+                common++;
+
+            if (common > 0)
+                startIdx = common;
+        }
+
         try {
-            currentTree = await getTreeHash(baseRef);
+            // Cached tree unavailable or malformed – fall back to a full simulation
+            if (startIdx > 0 && /^[a-f0-9]{40}$/.test(this.check_state!.prefixTrees[startIdx - 1]))
+                currentTree = this.check_state!.prefixTrees[startIdx - 1];
+            else {
+                startIdx = 0;
+                currentTree = await getTreeHash(baseRef);
+            }
         } catch (e) {
             return { success: false, conflictFiles: [], error: `Cannot resolve tree of the base commit ${baseRef}` };
         }
+        const resumedPrefix = startIdx;
 
         // Batch-resolve trees of all commits in a single git call (instead of one rev-parse per commit)
         const commitTrees = new Map<string, string>();
         try {
-            const { stdout } = await execAsync(
-                `git rev-parse ${commitsToApply.map(h => `"${h}^{tree}"`).join(' ')}`,
-                { cwd: this.workspaceRoot });
+            const { stdout } = await this.runGit(['rev-parse', ...commitsToApply.map(h => `${h}^{tree}`)]);
             const trees = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
             if (trees.length !== commitsToApply.length || trees.some(t => !/^[a-f0-9]{40}$/.test(t)))
                 throw new Error('Unexpected rev-parse output');
@@ -667,9 +852,7 @@ export class GitService {
         // Root commits simply have no parent entry in the rev-list output.
         const parentMap = new Map<string, string[]>();
         try {
-            const { stdout } = await execAsync(
-                `git rev-list --parents --no-walk ${commitsToApply.map(h => `"${h}"`).join(' ')}`,
-                { cwd: this.workspaceRoot });
+            const { stdout } = await this.runGit(['rev-list', '--parents', '--no-walk', ...commitsToApply]);
             for (const line of stdout.split('\n')) {
                 const parts = line.trim().split(/\s+/);
                 if (parts.length === 0 || !parts[0])
@@ -689,9 +872,7 @@ export class GitService {
         const parentTrees = new Map<string, string>();
         if (uniqueParents.length > 0) {
             try {
-                const { stdout } = await execAsync(
-                    `git rev-parse ${uniqueParents.map(h => `"${h}^{tree}"`).join(' ')}`,
-                    { cwd: this.workspaceRoot });
+                const { stdout } = await this.runGit(['rev-parse', ...uniqueParents.map(h => `${h}^{tree}`)]);
                 const trees = stdout.split('\n').map(s => s.trim()).filter(s => s.length > 0);
                 if (trees.length !== uniqueParents.length || trees.some(t => !/^[a-f0-9]{40}$/.test(t)))
                     throw new Error('Unexpected rev-parse output');
@@ -705,7 +886,19 @@ export class GitService {
             }
         }
 
-        for (let idx = 0; idx < commitsToApply.length; idx++) {
+        // Accumulated trees per position (suffix only when resumed); saved for the
+        // next incremental check
+        const prefixTrees = this.check_state && resumedPrefix > 0
+            ? this.check_state.prefixTrees.slice(0, resumedPrefix)
+            : [];
+
+        // Persist the verified prefix even when the suffix fails: the next check
+        // resumes from the same position instead of re-merging from the start.
+        const saveState = () => {
+            this.check_state = { baseRef, plan: commitsToApply, prefixTrees };
+        };
+
+        for (let idx = resumedPrefix; idx < commitsToApply.length; idx++) {
             const commitHash = commitsToApply[idx];
             const commitTree = commitTrees.get(commitHash)!;
             // No parent (root commit) – use empty tree as merge base
@@ -714,15 +907,18 @@ export class GitService {
 
             if (parentTree === currentTree) {
                 currentTree = commitTree;
+                prefixTrees.push(commitTree);
                 continue;
             }
 
             // Requires git >= 2.40.
-            const mergeCmd = `git merge-tree --write-tree --name-only --no-messages --merge-base=${parentTree} ${currentTree} ${commitTree}`;
             let mergeStdout = '';
             let exitCode = 0;
             try {
-                const { stdout } = await execAsync(mergeCmd, { cwd: this.workspaceRoot });
+                const { stdout } = await this.runGit([
+                    'merge-tree', '--write-tree', '--name-only', '--no-messages',
+                    `--merge-base=${parentTree}`, currentTree, commitTree
+                ]);
                 mergeStdout = stdout;
             } catch (error: any) {
                 exitCode = typeof error.code === 'number' ? error.code : 1;
@@ -741,6 +937,7 @@ export class GitService {
                     };
                 }
                 currentTree = mergedTree;
+                prefixTrees.push(mergedTree);
                 continue;
             }
 
@@ -759,12 +956,16 @@ export class GitService {
             const lines = mergeStdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
             const conflictFiles = lines.filter(l => !/^[a-f0-9]{40}$/.test(l));
 
+            saveState();
+
             return {
                 success: false,
                 hash: commitHash,
                 conflictFiles: conflictFiles
             };
         }
+
+        saveState();
 
         return { success: true };
     }
