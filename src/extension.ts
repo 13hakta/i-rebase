@@ -113,6 +113,16 @@ async function handleRebaseError(gitService: GitService, target: string, kind: G
     }
 }
 
+// If a rebase is already in progress, open the running session instead of starting a new one.
+// Returns true when an active rebase was found and opened.
+async function ensureNoActiveRebase(gitService: GitService): Promise<boolean> {
+    if (await gitService.isRebaseStarted()) {
+        await gitService.openGitRebaseTodo();
+        return true;
+    }
+    return false;
+}
+
 // Prompt user for an arbitrary refspec and validate it
 async function promptForRefspec(gitService: GitService): Promise<string | null> {
     const ref = await vscode.window.showInputBox({
@@ -152,10 +162,8 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand(id, async () => {
                 const gitService = new GitService();
 
-                if (await gitService.isRebaseStarted()) {
-                    await gitService.openGitRebaseTodo();
+                if (await ensureNoActiveRebase(gitService))
                     return;
-                }
 
                 const target = await gitService.getNthLastCommit(numCommits);
                 if (target)
@@ -168,10 +176,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('irebase.rebaseUpToPush:scm', async () => {
             const gitService = new GitService();
 
-            if (await gitService.isRebaseStarted()) {
-                await gitService.openGitRebaseTodo();
+            if (await ensureNoActiveRebase(gitService))
                 return;
-            }
 
             const target = await gitService.getUpstreamMergeBase();
             if (target)
@@ -183,10 +189,8 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('irebase.rebaseCustomRef:scm', async () => {
             const gitService = new GitService();
 
-            if (await gitService.isRebaseStarted()) {
-                await gitService.openGitRebaseTodo();
+            if (await ensureNoActiveRebase(gitService))
                 return;
-            }
 
             const target = await promptForRefspec(gitService);
             if (target)
@@ -194,15 +198,12 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Legacy commands (kept for backwards compatibility)
     context.subscriptions.push(
         vscode.commands.registerCommand('irebase.initRebaseLastCommits:scm', async () => {
             const gitService = new GitService();
 
-            if (await gitService.isRebaseStarted()) {
-                await gitService.openGitRebaseTodo();
+            if (await ensureNoActiveRebase(gitService))
                 return;
-            }
 
             const input = await vscode.window.showInputBox({
                 prompt: 'Enter number of last commits to include in rebase',
@@ -220,21 +221,6 @@ export function activate(context: vscode.ExtensionContext) {
                         await runRebase(target);
                 }
             }
-        })
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand('irebase.initRebaseLast50Commits:scm', async () => {
-            const gitService = new GitService();
-
-            if (await gitService.isRebaseStarted()) {
-                await gitService.openGitRebaseTodo();
-                return;
-            }
-
-            const target = await gitService.getNthLastCommit(50);
-            if (target)
-                await runRebase(target);
         })
     );
 }
