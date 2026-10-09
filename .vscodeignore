@@ -2,6 +2,7 @@
 .vscode/**
 *.vsix
 src/**
+common/**
 tsconfig.json
 tsconfig.tsbuildinfo
 scripts/**
