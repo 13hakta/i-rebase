@@ -1,4 +1,10 @@
 // Script run within the webview itself.
+// Types are aliased via import() instead of a plain import statement so this file
+// stays a plain script (no ES module marker `export{}` is emitted).
+type Command = import('../common/types').Command;
+type CommitChange = import('../common/types').CommitChange;
+type SplitCommit = import('../common/types').SplitCommit;
+type SplitInfo = import('../common/types').SplitInfo;
 
 // --- Types ---
 
@@ -12,24 +18,13 @@ interface WebViewState {
     commits: Commit[];
 }
 
-type Command = 'pick' | 'reword' | 'edit' | 'squash' | 'fixup' | 'drop' | 'exec';
-
 interface CmdDef {
     v: Command;
     short: string;
     full: string;
 }
 
-interface SplitCommit {
-    message: string;
-    files: string[];
-}
-
-interface SplitInfo {
-    commits: SplitCommit[];
-    files?: string[];
-}
-
+// Webview-side view model: extends the shared commit data with UI-only flags.
 interface Commit {
     hash: string;
     command: Command;
@@ -48,11 +43,6 @@ interface Commit {
 interface RowFlag {
     moved: boolean;
     cmdChanged: boolean;
-}
-
-interface CommitChange {
-    modification: string;
-    filename: string;
 }
 
 // Global object exposed by splitDialog.js (loaded before editor.js)
@@ -109,9 +99,16 @@ type WebviewMessage =
     | PostMessageClearConflicts
     | PostMessageIntersections;
 
+// Messages sent from the webview to the extension
+interface OutgoingOpenDiff extends Record<string, unknown> {
+    type: 'openDiff';
+    hash: string;
+}
+
 // --- Globals injected by inline script in HTML ---
 declare let reverseOrder: boolean;
 declare const actionViewKind: string;
+declare const autoCheckConflicts: boolean;
 
 // --- VS Code API ---
 declare function acquireVsCodeApi(): VsCodeApi;
@@ -158,6 +155,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
         initialRows.reverse();
         rows.reverse();
 
+        // Keep the selection on the same commit
+        if (selectedRowIndex >= 0)
+            selectedRowIndex = rows.length - 1 - selectedRowIndex;
+
         render();
     }
 
@@ -178,6 +179,23 @@ declare function acquireVsCodeApi(): VsCodeApi;
         redoStack.length = 0;
         updateDirtyState();
         vscode.postMessage({ type: 'changed' });
+        scheduleAutoConflictCheck();
+    }
+
+    // Debounced silent conflict check after every plan change (optional setting)
+    let autoCheckTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function scheduleAutoConflictCheck(): void {
+        if (!autoCheckConflicts)
+            return;
+
+        if (autoCheckTimer !== undefined)
+            clearTimeout(autoCheckTimer);
+
+        autoCheckTimer = setTimeout(() => {
+            autoCheckTimer = undefined;
+            checkConflicts(true);
+        }, 500);
     }
 
     function reset(): void {
@@ -246,14 +264,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
         document.getElementById('intersect')!.classList.add('pressed');
     }
 
-    function hasUnsavedChanges(): boolean {
-        const current = JSON.stringify(rows);
-        const initial = JSON.stringify(initialRows);
-        return current !== initial;
-    }
-
     function updateDirtyState(): void {
-        const dirty = hasUnsavedChanges();
         (document.getElementById('reset') as HTMLButtonElement).disabled = undoStack.length === 0;
         (document.getElementById('undo') as HTMLButtonElement).disabled = undoStack.length === 0;
         (document.getElementById('redo') as HTMLButtonElement).disabled = redoStack.length === 0;
@@ -306,7 +317,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
         });
     }
 
-    function checkConflicts(): void {
+    function checkConflicts(silent: boolean = false): void {
         const commands: { command: Command; hash: string }[] = [];
 
         const orderedRows = (reverseOrder) ? [...rows].reverse() : rows;
@@ -320,7 +331,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
             });
         }
 
-        vscode.postMessage({ type: 'checkConflicts', commands: commands });
+        vscode.postMessage({ type: 'checkConflicts', commands: commands, silent: silent });
     }
 
     function markConflictingCommit(hash: string, conflictFiles: string[]): void {
@@ -390,11 +401,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
 
     function setContent(commits: Commit[]): void {
+        const copy = structuredClone(commits);
         if (reverseOrder)
-            commits.reverse();
+            copy.reverse();
 
-        rows = structuredClone(commits);
-        initialRows = structuredClone(commits);
+        rows = copy;
+        initialRows = structuredClone(copy);
 
         let authorMaxLen = 0;
 
@@ -787,13 +799,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
             authorEl.textContent = r.author || '';
             tdAuthor.appendChild(authorEl);
 
-            // Hash cell with potential highlighting
+            // Hash cell with potential highlighting; click opens the commit diff
             const tdHash = document.createElement('td');
             const hashEl = document.createElement('div');
-            hashEl.className = 'hash';
+            hashEl.className = 'hash hash-link';
             const hashText = (r.hash || '').slice(0, 8);
             hashEl.textContent = hashText;
-            hashEl.title = r.hash || '';
+            hashEl.title = 'Open commit diff: ' + (r.hash || '');
+            hashEl.addEventListener('click', (e) => {
+                e.stopPropagation(); // keep row selection unchanged
+                if (r.hash)
+                    vscode.postMessage({ type: 'openDiff', hash: r.hash } as OutgoingOpenDiff);
+            });
             tdHash.appendChild(hashEl);
 
             // Date cell
@@ -881,7 +898,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
                 tdSignMark.className = 'error-sign';
 
                 const tdConflictMark = document.createElement('td');
-                tdConflictMark.textContent = 'Conflicting files';
+                tdConflictMark.textContent = 'Files';
 
                 const tdConflictDescription = document.createElement('td');
                 tdConflictDescription.colSpan = 5;
@@ -978,7 +995,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
         }
 
         rows[rowIndex].command = CMDS[currentIndex];
-        vscode.postMessage({ type: 'updateCommand', rowIndex, currentIndex });
 
         render();
     }
@@ -1003,20 +1019,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
         switch (e.key) {
             case 'ArrowUp':
                 e.preventDefault();
-                // Move selection up, skipping root commits
-                for (let i = selectedRowIndex - 1; i >= 0; i--) {
-                    selectRow(i);
-                    break;
-                }
+                // Move selection up
+                if (selectedRowIndex > 0)
+                    selectRow(selectedRowIndex - 1);
                 break;
 
             case 'ArrowDown':
                 e.preventDefault();
-                // Move selection down, skipping root commits
-                for (let i = selectedRowIndex + 1; i < rows.length; i++) {
-                    selectRow(i);
-                    break;
-                }
+                // Move selection down
+                if (selectedRowIndex < rows.length - 1)
+                    selectRow(selectedRowIndex + 1);
                 break;
 
             case 'ArrowLeft':
@@ -1046,7 +1058,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     (orderBtn as HTMLElement).style.cursor = 'pointer';
     orderBtn.addEventListener('click', toggleOrder);
 
-    document.getElementById('check')!.addEventListener('click', checkConflicts);
+    document.getElementById('check')!.addEventListener('click', () => checkConflicts());
 
     // Add search functionality
     document.getElementById('search')!.addEventListener('input', performSearch);
