@@ -1,20 +1,11 @@
 // Split commit dialog - self-contained webview module.
 // Loaded as a plain <script> before editor.js; exposes global `SplitDialog` object.
-
-interface SplitDialogCommitChange {
-    modification: string;
-    filename: string;
-}
-
-interface SplitDialogSplitCommit {
-    message: string;
-    files: string[];
-}
-
-interface SplitDialogSplitInfo {
-    commits: SplitDialogSplitCommit[];
-    files?: string[];
-}
+// Types are aliased via import() instead of a plain import statement so this file
+// stays a plain script (no ES module marker `export{}` is emitted). Prefixed alias
+// names avoid clashes with editor.ts aliases in the shared global script scope.
+type SplitDialogCommitChange = import('../common/types').CommitChange;
+type SplitDialogSplitCommit = import('../common/types').SplitCommit;
+type SplitDialogSplitInfo = import('../common/types').SplitInfo;
 
 interface SplitDialogOptions {
     title: string;
@@ -120,7 +111,7 @@ interface SplitDialogOptions {
         let selectedCommitIdx = -1;
 
         // Initialize split commits array
-        const splitCommits: SplitDialogSplitCommit[] = (options.existing && options.existing.commits) ? [...options.existing.commits] : [];
+        const splitCommits: SplitCommit[] = (options.existing && options.existing.commits) ? [...options.existing.commits] : [];
 
         // Create modal dialog
         const dialog = document.createElement('dialog');
